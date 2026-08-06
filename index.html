@@ -1169,12 +1169,11 @@ function startVoice(){
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  // 如果已在录音，先停止
+  // 如果已在录音，正常停止并保留已识别内容（abort 会直接丢弃结果）
   if(isRecognizing && recognition){
-    try{ recognition.abort(); }catch(e){}
-    isRecognizing = false;
+    try{ recognition.stop(); }catch(e){}
     var btn = document.getElementById('voice-btn');
-    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
+    if(btn){ btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>正在生成文字...'; }
     return;
   }
 
@@ -1237,21 +1236,25 @@ function startVoice(){
 }
 function parseVoice(text){
   // 智能解析：门店名 描述 优先级 日期
-  var shop='',desc=text,pri='P2',deadline='';
+  var cleanedText=text.replace(/^\s*(?:门店|店名)\s*[:：]?\s*/,'');
+  var shop='',desc=cleanedText,pri='P2',deadline='';
   // 提取优先级
   if(/[Pp]0|紧急/.test(text)) pri='P0';
   else if(/[Pp]1|重要/.test(text)) pri='P1';
   // 提取日期
   var dateMatch=text.match(/(\d{1,2})月(\d{1,2})[日号]?/);
   if(dateMatch){
-    var m=S(parseInt(dateMatch[1])),d=S(parseInt(dateMatch[2]));
+    var month=parseInt(dateMatch[1]),day=parseInt(dateMatch[2]);
     var y=new Date().getFullYear();
-    deadline=y+'-'+m+'-'+d;
+    var checkDate=new Date(y,month-1,day);
+    if(checkDate.getFullYear()===y&&checkDate.getMonth()===month-1&&checkDate.getDate()===day){
+      deadline=y+'-'+S(month)+'-'+S(day);
+    }
   }
   // 尝试提取门店名（第一段或"门店"关键词附近）
-  var shopMatch=text.match(/^(.+?店)/);
+  var shopMatch=cleanedText.match(/^(.+?店)/);
   if(shopMatch) shop=shopMatch[1];
-  if(shop) desc=text.replace(shop,'').replace(/^\s*[，,]\s*/,'');
+  if(shop) desc=cleanedText.slice(shop.length).replace(/^\s*[，,。.]\s*/,'');
 
   // 存入 STATE 而非直接操作 DOM（因为 renderApp 会重建 DOM）
   STATE.voiceParsed = {shop:shop, desc:desc, pri:pri, deadline:deadline};

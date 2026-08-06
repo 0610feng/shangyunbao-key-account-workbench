@@ -69,6 +69,17 @@ body{
 .ti-pri.P1{background:var(--warn2);color:#b45309}
 .ti-pri.P2{background:var(--border2);color:var(--text3)}
 .ti-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ti-carousel{position:relative;min-height:64px}
+.ti-slide{display:none;align-items:center;gap:8px;padding:7px 0;font-size:13px}
+.ti-slide.active{display:flex}
+.ti-slide-main{flex:1;min-width:0}
+.ti-slide-title{display:flex;align-items:center;gap:6px;font-weight:600;min-width:0}
+.ti-slide-title .ti-text{display:block}
+.ti-slide-desc{font-size:12px;color:var(--text2);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ti-slide-meta{display:flex;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--text3);margin-top:4px}
+.ti-slide.overdue .ti-slide-meta{color:var(--danger)}
+.ti-carousel-nav{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:4px}
+.ti-carousel-count{font-size:11px;color:var(--text3);min-width:42px;text-align:center}
 
 /* === NAV TABS === */
 .nav-tabs{display:flex;gap:0;margin:0 16px;background:var(--card);border-radius:var(--r) var(--r) 0 0;overflow:hidden;
@@ -175,6 +186,22 @@ body{
 
 .voice-preview{background:var(--warn2);border:1px dashed #fcd34d;border-radius:var(--rs);padding:10px 12px;margin-bottom:10px;font-size:13px;color:#92400e;display:none}
 .voice-preview.show{display:block}
+.voice-workspace{margin-top:10px;background:#fff;border:1px solid #fecaca;border-radius:var(--rs);padding:10px}
+.voice-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.voice-transcript-label{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:700;color:var(--text2);margin:9px 0 5px}
+.voice-transcript{width:100%;min-height:92px;resize:vertical;padding:9px 11px;border:1px solid var(--border);border-radius:var(--rs);font-family:inherit;font-size:14px;line-height:1.6;color:var(--text);background:#fff}
+.voice-transcript:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-light)}
+.voice-status{font-size:11px;color:var(--text3);font-weight:400}
+.voice-mapped{margin-top:8px;padding:7px 9px;background:var(--success2);border-radius:6px;color:#047857;font-size:12px}
+.p0-panel{border:1px solid #fca5a5;background:linear-gradient(180deg,#fff 0%,var(--danger2) 100%)}
+.p0-panel-title{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
+.p0-panel-title strong{color:#b91c1c;font-size:14px}
+.p0-work-order{background:#fff;border:1px solid #fecaca;border-left:4px solid var(--danger);border-radius:var(--rs);padding:10px 11px;margin-bottom:8px}
+.p0-work-order:last-child{margin-bottom:0}
+.p0-work-order-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.p0-work-order-shop{font-weight:700;font-size:14px}
+.p0-work-order-desc{font-size:13px;color:var(--text2);margin:5px 0}
+.p0-work-order-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--text3)}
 
 .footer-actions{display:flex;gap:8px;justify-content:center;padding:16px;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:16px}
 
@@ -198,6 +225,9 @@ body{
   .nav-tab{font-size:12px;padding:10px 2px}
   .main-content{padding:12px 10px}
   .login-card{padding:24px 16px}
+  .ti-slide{align-items:flex-start;flex-wrap:wrap}
+  .ti-slide-main{flex-basis:calc(100% - 40px)}
+  .voice-actions .btn{flex:1}
 }
 @supports(padding-bottom:env(safe-area-inset-bottom)){
   #app{padding-bottom:env(safe-area-inset-bottom)}
@@ -246,7 +276,9 @@ var STATE = {
   tab: 'dashboard',
   editingIssueId: null,
   voiceText: '',
-  voiceParsed: {shop:'', desc:'', pri:'P2', deadline:''}
+  voiceParsed: {shop:'', desc:'', pri:'P2', deadline:''},
+  voiceParsedReady: false,
+  voiceMissing: []
 };
 
 // ====== 工具函数 ======
@@ -506,10 +538,15 @@ function getMergedArchives(){
 }
 
 // ====== 驾驶舱数据 ======
-function getDashIssues(){
+function getScopedIssues(){
   var useTeam = STATE.user&&STATE.user.role==='admin'&&STATE.dashScope==='team';
-  var all = useTeam ? getMergedIssues() : STATE.data.issues.slice();
-  return filterByDate(all);
+  return useTeam ? getMergedIssues() : STATE.data.issues.slice();
+}
+function isIssueCompleted(issue){
+  return issue&&issue.progress==='已完结';
+}
+function getDashIssues(){
+  return filterByDate(getScopedIssues());
 }
 function filterByDate(arr){
   if(STATE.dashRange==='all') return arr;
@@ -598,26 +635,65 @@ function svgBar(data){
   return '<svg viewBox="0 0 '+w+' '+h+'" style="max-width:300px">'+bars+'</svg>';
 }
 
-// ====== "今天要处理" ======
-function getTodayItems(){
+// ====== 未处理工单轮播（不受驾驶舱日期筛选影响） ======
+function getOpenWorkItems(){
   var items=[];
   var today=new Date();today.setHours(0,0,0,0);
-  var issues=getDashIssues();
+  var issues=getScopedIssues();
   for(var i=0;i<issues.length;i++){
     var iss=issues[i];
-    if(iss.progress==='已完结') continue;
+    if(isIssueCompleted(iss)) continue;
+    var type='pending';
     if(iss.deadline){
       var dl=new Date(iss.deadline);dl.setHours(0,0,0,0);
-      if(dl<today){items.push({issue:iss,type:'overdue'});continue}
-      if(dl.getTime()===today.getTime()){items.push({issue:iss,type:'today'});continue}
+      if(dl<today) type='overdue';
+      else if(dl.getTime()===today.getTime()) type='today';
     }
+    items.push({issue:iss,type:type});
   }
+  var priOrder={P0:0,P1:1,P2:2};
   items.sort(function(a,b){
+    var ap=priOrder[a.issue.priority]===undefined?2:priOrder[a.issue.priority];
+    var bp=priOrder[b.issue.priority]===undefined?2:priOrder[b.issue.priority];
+    if(ap!==bp) return ap-bp;
     if(a.type==='overdue'&&b.type!=='overdue') return -1;
     if(a.type!=='overdue'&&b.type==='overdue') return 1;
-    return 0;
+    var ad=a.issue.deadline||'9999-12-31',bd=b.issue.deadline||'9999-12-31';
+    if(ad!==bd) return ad.localeCompare(bd);
+    return (a.issue.createdAt||'').localeCompare(b.issue.createdAt||'');
   });
   return items;
+}
+
+function getOpenP0Issues(){
+  return getOpenWorkItems().filter(function(item){return item.issue.priority==='P0'});
+}
+
+var workCarouselTimer=null;
+var workCarouselIndex=0;
+function stopWorkCarousel(){
+  if(workCarouselTimer){clearInterval(workCarouselTimer);workCarouselTimer=null}
+}
+function showWorkCarouselItem(index){
+  var slides=document.querySelectorAll('.ti-slide');
+  if(!slides.length) return;
+  workCarouselIndex=((index%slides.length)+slides.length)%slides.length;
+  for(var i=0;i<slides.length;i++) slides[i].classList.toggle('active',i===workCarouselIndex);
+  var counter=document.getElementById('ti-carousel-count');
+  if(counter) counter.textContent=(workCarouselIndex+1)+' / '+slides.length;
+}
+function startWorkCarousel(){
+  stopWorkCarousel();
+  var slides=document.querySelectorAll('.ti-slide');
+  if(!slides.length) return;
+  showWorkCarouselItem(Math.min(workCarouselIndex,slides.length-1));
+  if(slides.length>1){
+    workCarouselTimer=setInterval(function(){showWorkCarouselItem(workCarouselIndex+1)},4500);
+  }
+}
+function moveWorkCarousel(step){
+  showWorkCarouselItem(workCarouselIndex+step);
+  startWorkCarousel();
 }
 
 // ====== 初始示例数据 ======
@@ -648,6 +724,7 @@ async function clearSampleData(){
 
 // ====== 登录 / 注册 ======
 function showLogin(errorMsg){
+  stopWorkCarousel();
   STATE.user = null;
   STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
   STATE.importedData = {};
@@ -776,6 +853,10 @@ async function doLogout(){
   STATE.user = null;
   STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
   STATE.importedData = {};
+  STATE.voiceText='';
+  STATE.voiceParsed={shop:'',desc:'',pri:'P2',deadline:''};
+  STATE.voiceParsedReady=false;
+  STATE.voiceMissing=[];
   TEAM_PROFILES=[];
   showLogin();
 }
@@ -911,6 +992,7 @@ function renderApp(){
   h+='</div>';
 
   document.getElementById('app').innerHTML = h;
+  startWorkCarousel();
 
   // Backup reminder
   var totalCount = STATE.data.issues.length + STATE.data.archives.length;
@@ -927,21 +1009,39 @@ function renderApp(){
 
 // ====== Today Bar ======
 function renderTodayBar(){
-  var items=getTodayItems();
+  var items=getOpenWorkItems();
   var h='<div class="today-bar"><div class="today-hdr">';
-  h+='<span class="today-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 今天要处理</span>';
-  h+='<span style="font-size:12px;color:var(--text3)">'+items.length+' 项</span>';
+  h+='<span class="today-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 未处理工单轮播</span>';
+  h+='<span style="font-size:12px;color:var(--text3)">'+items.length+' 项未完成</span>';
   h+='</div>';
-  if(items.length===0) h+='<div style="font-size:13px;color:var(--text3);padding:8px 0">暂无待处理项</div>';
-  for(var i=0;i<Math.min(items.length,5);i++){
+  if(items.length===0){
+    h+='<div style="font-size:13px;color:var(--text3);padding:8px 0">暂无未处理工单</div>';
+  }else{
+    h+='<div class="ti-carousel" aria-live="polite">';
+  }
+  for(var i=0;i<items.length;i++){
     var it=items[i];
     var cls=it.type==='overdue'?' overdue':'';
     var ownerPrefix=it.issue._fromMember?'['+it.issue._fromMember+'] ':'';
-    h+='<div class="ti-row'+cls+'">';
+    h+='<div class="ti-slide'+cls+(i===0?' active':'')+'" data-carousel-index="'+i+'">';
     h+='<span class="ti-pri '+it.issue.priority+'">'+esc(it.issue.priority||'P2')+'</span>';
-    h+='<span class="ti-text">'+esc(ownerPrefix+(it.issue.shopName||'未知门店'))+' - '+esc((it.issue.shopDesc||'').slice(0,24))+'</span>';
-    if(it.type==='overdue') h+='<span style="font-size:11px;color:#ef4444;flex-shrink:0">逾期</span>';
+    h+='<div class="ti-slide-main">';
+    h+='<div class="ti-slide-title"><span class="ti-text">'+esc(ownerPrefix+(it.issue.shopName||'未知门店'))+'</span></div>';
+    h+='<div class="ti-slide-desc">'+esc(it.issue.shopDesc||'未填写门店问题')+'</div>';
+    h+='<div class="ti-slide-meta"><span>状态：'+esc(it.issue.progress||'未开始')+'</span>';
+    h+='<span>截止：'+esc(it.issue.deadline||'未设置')+'</span>';
+    if(it.type==='overdue') h+='<span style="font-weight:700">已逾期</span>';
+    else if(it.type==='today') h+='<span style="color:var(--warn);font-weight:700">今日截止</span>';
+    h+='</div></div>';
     h+='<button class="btn btn-xs btn-primary" onclick="switchTab(\'issues\')">处理</button>';
+    h+='</div>';
+  }
+  if(items.length){
+    h+='</div>';
+    h+='<div class="ti-carousel-nav">';
+    h+='<button class="btn btn-xs" aria-label="上一条未处理工单" onclick="moveWorkCarousel(-1)">‹</button>';
+    h+='<span class="ti-carousel-count" id="ti-carousel-count">1 / '+items.length+'</span>';
+    h+='<button class="btn btn-xs" aria-label="下一条未处理工单" onclick="moveWorkCarousel(1)">›</button>';
     h+='</div>';
   }
   h+='</div>';
@@ -987,6 +1087,29 @@ function renderDashboard(){
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--danger)">'+s.overdue+'</div><div class="kpi-label">已逾期</div></div>';
   h+='</div>';
 
+  // P0 工单明细：显示当前统计范围内的所有未完成 P0，不受日期筛选影响。
+  var openP0=getOpenP0Issues();
+  h+='<div class="card p0-panel">';
+  h+='<div class="p0-panel-title"><strong>P0 紧急工单（'+openP0.length+'）</strong>';
+  h+='<span style="font-size:11px;color:var(--text3)">全部未完成 · 不受日期筛选影响</span></div>';
+  if(openP0.length===0){
+    h+='<div style="font-size:13px;color:var(--text3);padding:8px 0">当前没有未完成的 P0 工单</div>';
+  }else{
+    for(var pi=0;pi<openP0.length;pi++){
+      var p0Item=openP0[pi],p0=p0Item.issue;
+      h+='<div class="p0-work-order">';
+      h+='<div class="p0-work-order-top"><span class="p0-work-order-shop">'+esc((p0._fromMember?'['+p0._fromMember+'] ':'')+(p0.shopName||'未知门店'))+'</span>';
+      h+='<span class="badge badge-p0">P0</span></div>';
+      h+='<div class="p0-work-order-desc">'+esc(p0.shopDesc||'未填写门店问题')+'</div>';
+      h+='<div class="p0-work-order-meta"><span>状态：'+esc(p0.progress||'未开始')+'</span><span>截止：'+esc(p0.deadline||'未设置')+'</span>';
+      if(p0Item.type==='overdue') h+='<span style="color:var(--danger);font-weight:700">已逾期</span>';
+      if(p0._fromDept) h+='<span>部门：'+esc(p0._fromDept)+'</span>';
+      h+='<button class="btn btn-xs btn-primary" style="margin-left:auto" onclick="switchTab(\'issues\')">进入处理</button>';
+      h+='</div></div>';
+    }
+  }
+  h+='</div>';
+
   // Charts
   h+='<div class="chart-row">';
   h+='<div class="chart-box"><div class="chart-ttl">问题状态分布</div>'+svgPie(pie)+'</div>';
@@ -1013,19 +1136,22 @@ function renderDashboard(){
 function renderIssues(){
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 问题排查台</div>';
 
-  // Voice card - prominent
+  // 语音转文字工作区：先实时转写和人工校对，再识别拆分到工单字段。
   h+='<div class="card" style="border:2px dashed #fca5a5;background:var(--danger2);margin-bottom:12px">';
-  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">';
-  h+='<div style="flex:1;min-width:0">';
   h+='<div style="font-weight:700;font-size:14px;margin-bottom:2px"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:3px">'+I.mic+'</span>语音录入</div>';
-  h+='<div style="font-size:12px;color:var(--text2)">说出门店信息和问题，自动识别填入表单</div>';
+  h+='<div style="font-size:12px;color:var(--text2)">先录音实时转成文字，可修改；确认无误后点击“识别并填入”。</div>';
+  h+='<div class="voice-workspace">';
+  h+='<div class="voice-actions">';
+  h+='<button class="btn btn-sm btn-voice" id="voice-btn" onclick="startVoice()"><span style="display:inline-block;width:14px;height:14px">'+I.mic+'</span><span id="voice-btn-label">录音</span></button>';
+  h+='<button class="btn btn-sm btn-primary" id="voice-parse-btn" onclick="recognizeVoiceText()">'+I.search+' 识别并填入</button>';
+  h+='<button class="btn btn-sm" onclick="clearVoiceTranscript()">清空文字</button>';
   h+='</div>';
-  h+='<button class="btn btn-voice" id="voice-btn" onclick="startVoice()" style="font-size:15px;padding:10px 18px"><span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音</button>';
-  h+='</div>';
-  // Voice preview
-  h+='<div class="voice-preview'+(STATE.voiceText?' show':'')+'" id="voice-preview" style="margin-top:8px">';
-  h+='<strong>识别结果：</strong><span id="voice-text">'+esc(STATE.voiceText)+'</span>';
-  h+='<button class="btn btn-xs" style="margin-left:8px" onclick="STATE.voiceText=\'\';STATE.voiceParsed={shop:\'\',desc:\'\',pri:\'P2\',deadline:\'\'};renderApp()">清除</button>';
+  h+='<div class="voice-transcript-label"><span>语音转文字（可编辑）</span><span class="voice-status" id="voice-status">等待录音，或直接输入文字</span></div>';
+  h+='<textarea class="voice-transcript" id="voice-transcript" placeholder="示例：门店名称杭州西湖店，门店问题收银系统无法结账，P0紧急，截止明天。" oninput="updateVoiceText(this.value)">'+esc(STATE.voiceText)+'</textarea>';
+  if(STATE.voiceParsedReady){
+    h+='<div class="voice-mapped">已识别：门店 '+esc(STATE.voiceParsed.shop||'待确认')+'；问题 '+esc(STATE.voiceParsed.desc||'待确认')+'；紧急程度 '+esc(STATE.voiceParsed.pri||'待确认')+'；截止 '+esc(STATE.voiceParsed.deadline||'待确认')+'。请在下方表单复核。</div>';
+    if(STATE.voiceMissing&&STATE.voiceMissing.length) h+='<div class="voice-mapped" style="background:var(--warn2);color:#92400e">未能确定：'+esc(STATE.voiceMissing.join('、'))+'，请人工确认。</div>';
+  }
   h+='</div>';
   h+='</div>';
 
@@ -1039,11 +1165,11 @@ function renderIssues(){
   var vp = STATE.voiceParsed || {shop:'', desc:'', pri:'P2', deadline:''};
   var formShop = STATE.editingIssueId ? findIssue(STATE.editingIssueId).shopName : vp.shop;
   var formDesc = STATE.editingIssueId ? findIssue(STATE.editingIssueId).shopDesc : vp.desc;
-  var formPri  = STATE.editingIssueId ? findIssue(STATE.editingIssueId).priority : vp.pri;
+  var formPri  = STATE.editingIssueId ? findIssue(STATE.editingIssueId).priority : (vp.pri||'P2');
   var formDl   = STATE.editingIssueId ? findIssue(STATE.editingIssueId).deadline : (vp.deadline||tsOffset(7));
   var formProg = STATE.editingIssueId ? findIssue(STATE.editingIssueId).progress : '未开始';
   h+='<div class="form-group"><label>门店名称</label><input id="iss-shop" placeholder="如：华东区-杭州西湖店" value="'+esc(formShop)+'"></div>';
-  h+='<div class="form-group"><label>门店描述</label><textarea id="iss-desc" placeholder="描述遇到的问题">'+esc(formDesc)+'</textarea></div>';
+  h+='<div class="form-group"><label>门店问题</label><textarea id="iss-desc" placeholder="描述遇到的问题">'+esc(formDesc)+'</textarea></div>';
   h+='<div class="form-row3">';
   h+='<div class="form-group"><label>优先级</label><select id="iss-pri">'+
     '<option value="P0"'+((formPri==='P0')?' selected':'')+'>P0 紧急</option>'+
@@ -1064,7 +1190,7 @@ function renderIssues(){
   var issues = STATE.data.issues.slice();
   issues.sort(function(a,b){
     var po={'P0':0,'P1':1,'P2':2};
-    var pa=po[a.priority]||2,pb=po[b.priority]||2;
+    var pa=po[a.priority]===undefined?2:po[a.priority],pb=po[b.priority]===undefined?2:po[b.priority];
     if(pa!==pb) return pa-pb;
     return (a.deadline||'').localeCompare(b.deadline||'');
   });
@@ -1149,6 +1275,8 @@ async function addIssue(){
   var issue={id:gid(),shopName:shop,shopDesc:desc,priority:pri,deadline:dl,progress:prog,createdAt:ts()};
   STATE.voiceParsed = {shop:'', desc:'', pri:'P2', deadline:''};
   STATE.voiceText = '';
+  STATE.voiceParsedReady = false;
+  STATE.voiceMissing = [];
   STATE.data.issues.unshift(issue);
   // 已完结 → 自动归档
   if(prog==='已完结') archiveIssue(issue);
@@ -1204,106 +1332,222 @@ function archiveIssue(issue){
 // ====== 语音录入 ======
 var recognition=null;
 var isRecognizing=false;
+var voiceSessionBase='';
+var voiceLastError='';
+
+function setVoiceUi(recording,label,status){
+  var btn=document.getElementById('voice-btn');
+  if(btn) btn.classList.toggle('recording',!!recording);
+  var labelEl=document.getElementById('voice-btn-label');
+  if(labelEl) labelEl.textContent=label||'录音';
+  var statusEl=document.getElementById('voice-status');
+  if(statusEl&&status) statusEl.textContent=status;
+  var transcript=document.getElementById('voice-transcript');
+  if(transcript) transcript.readOnly=!!recording;
+}
+
+function updateVoiceText(value){
+  STATE.voiceText=value;
+  STATE.voiceParsedReady=false;
+  STATE.voiceMissing=[];
+  var mapped=document.querySelectorAll('.voice-mapped');
+  for(var i=0;i<mapped.length;i++) mapped[i].style.display='none';
+  var statusEl=document.getElementById('voice-status');
+  if(statusEl&&!isRecognizing) statusEl.textContent='文字已修改，请点击“识别并填入”';
+}
+
+function writeVoiceTranscript(value){
+  STATE.voiceText=value;
+  var transcript=document.getElementById('voice-transcript');
+  if(transcript){
+    transcript.value=value;
+    transcript.scrollTop=transcript.scrollHeight;
+  }
+}
+
+function clearVoiceTranscript(){
+  if(isRecognizing&&recognition){try{recognition.stop()}catch(e){}}
+  STATE.voiceText='';
+  STATE.voiceParsedReady=false;
+  STATE.voiceMissing=[];
+  var transcript=document.getElementById('voice-transcript');
+  if(transcript) transcript.value='';
+  var mapped=document.querySelectorAll('.voice-mapped');
+  for(var i=0;i<mapped.length;i++) mapped[i].style.display='none';
+  setVoiceUi(false,'录音','等待录音，或直接输入文字');
+}
+
 function startVoice(){
-  // 浏览器兼容性检查
   var hasSR = ('webkitSpeechRecognition' in window) || ('SpeechRecognition' in window);
   if(!hasSR){
     T('当前浏览器不支持语音识别。请使用 Chrome/Edge 浏览器打开此页面，或手动填写表单');
+    setVoiceUi(false,'录音','当前浏览器不支持麦克风转写，可直接输入文字');
     return;
   }
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-  // 如果已在录音，正常停止并保留已识别内容（abort 会直接丢弃结果）
   if(isRecognizing && recognition){
     try{ recognition.stop(); }catch(e){}
-    var btn = document.getElementById('voice-btn');
-    if(btn){ btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>正在生成文字...'; }
+    setVoiceUi(false,'整理中...','正在整理最后一段文字...');
+    var pendingTranscript=document.getElementById('voice-transcript');
+    if(pendingTranscript) pendingTranscript.readOnly=true;
     return;
   }
 
-  // 创建或重建 recognition 实例（避免状态异常）
   try{ if(recognition) recognition.abort(); }catch(e){}
+  var transcript=document.getElementById('voice-transcript');
+  STATE.voiceText=transcript?transcript.value.trim():STATE.voiceText.trim();
+  voiceSessionBase=STATE.voiceText;
   recognition = new SR();
   recognition.lang = 'zh-CN';
-  recognition.interimResults = false;
+  recognition.interimResults = true;
   recognition.maxAlternatives = 1;
-  recognition.continuous = false;
+  recognition.continuous = true;
 
   recognition.onstart = function(){
     isRecognizing = true;
-    var btn = document.getElementById('voice-btn');
-    if(btn){ btn.classList.add('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>正在聆听...点击停止'; }
+    voiceLastError='';
+    setVoiceUi(true,'停止','正在录音并实时转写...');
     T('正在聆听，请说出门店信息和问题...');
   };
 
   recognition.onresult = function(e){
-    isRecognizing = false;
-    var text = '';
+    var finalText='',interimText='';
     for(var i=0; i<e.results.length; i++){
-      text += e.results[i][0].transcript;
+      var segment=e.results[i][0].transcript||'';
+      if(e.results[i].isFinal) finalText+=segment;
+      else interimText+=segment;
     }
-    if(text){
-      STATE.voiceText = text;
-      parseVoice(text);
-    }
-    var btn = document.getElementById('voice-btn');
-    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
-    renderApp();
+    var current=(voiceSessionBase?voiceSessionBase+' ':'')+finalText+interimText;
+    writeVoiceTranscript(current.trim());
+    setVoiceUi(true,'停止',interimText?'正在实时转写...':'已记录，继续说或点击停止');
   };
 
   recognition.onerror = function(e){
     isRecognizing = false;
-    var btn = document.getElementById('voice-btn');
-    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
     var msg = '语音识别出错';
     if(e.error === 'not-allowed') msg = '麦克风权限被拒绝，请在浏览器设置中允许麦克风访问';
     else if(e.error === 'no-speech') msg = '未检测到语音，请靠近麦克风再试一次';
     else if(e.error === 'network') msg = '网络连接异常，语音识别需要联网';
-    else if(e.error === 'aborted') return; // 用户手动停止，不提示
+    else if(e.error === 'aborted') return;
     else msg = '语音识别失败：' + e.error;
+    voiceLastError=msg;
+    setVoiceUi(false,'录音',msg);
     T(msg);
   };
 
   recognition.onend = function(){
     isRecognizing = false;
-    var btn = document.getElementById('voice-btn');
-    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
+    setVoiceUi(false,'录音',voiceLastError||(STATE.voiceText?'录音已结束，可修改文字后识别':'未识别到文字，可重新录音'));
   };
 
-  // 开始识别
   try{
     recognition.start();
   }catch(e){
     T('启动语音识别失败，请刷新页面后重试');
     isRecognizing = false;
+    setVoiceUi(false,'录音','启动失败，请刷新页面后重试');
   }
 }
-function parseVoice(text){
-  // 智能解析：门店名 描述 优先级 日期
-  var cleanedText=text.replace(/^\s*(?:门店|店名)\s*[:：]?\s*/,'');
-  var shop='',desc=cleanedText,pri='P2',deadline='';
-  // 提取优先级
-  if(/[Pp]0|紧急/.test(text)) pri='P0';
-  else if(/[Pp]1|重要/.test(text)) pri='P1';
-  // 提取日期
-  var dateMatch=text.match(/(\d{1,2})月(\d{1,2})[日号]?/);
-  if(dateMatch){
-    var month=parseInt(dateMatch[1]),day=parseInt(dateMatch[2]);
-    var y=new Date().getFullYear();
-    var checkDate=new Date(y,month-1,day);
-    if(checkDate.getFullYear()===y&&checkDate.getMonth()===month-1&&checkDate.getDate()===day){
-      deadline=y+'-'+S(month)+'-'+S(day);
-    }
-  }
-  // 尝试提取门店名（第一段或"门店"关键词附近）
-  var shopMatch=cleanedText.match(/^(.+?店)/);
-  if(shopMatch) shop=shopMatch[1];
-  if(shop) desc=cleanedText.slice(shop.length).replace(/^\s*[，,。.]\s*/,'');
 
-  // 存入 STATE 而非直接操作 DOM（因为 renderApp 会重建 DOM）
-  STATE.voiceParsed = {shop:shop, desc:desc, pri:pri, deadline:deadline};
-  T('已解析语音内容并填入表单，请核对后添加');
+function validVoiceDate(year,month,day){
+  var d=new Date(year,month-1,day);
+  return d.getFullYear()===year&&d.getMonth()===month-1&&d.getDate()===day;
+}
+function voiceDateText(year,month,day){
+  return validVoiceDate(year,month,day)?year+'-'+S(month)+'-'+S(day):'';
+}
+function parseVoiceDeadline(text){
+  var now=new Date(),year=now.getFullYear(),m;
+  m=text.match(/(20\d{2})\s*(?:年|[-\/.])\s*(\d{1,2})\s*(?:月|[-\/.])\s*(\d{1,2})\s*[日号]?/);
+  if(m) return voiceDateText(parseInt(m[1]),parseInt(m[2]),parseInt(m[3]));
+  if(/大后天/.test(text)) return tsOffset(3);
+  if(/后天/.test(text)) return tsOffset(2);
+  if(/明天|明日/.test(text)) return tsOffset(1);
+  if(/今天|今日/.test(text)) return ts();
+  m=text.match(/(\d{1,2})\s*天后/);
+  if(m) return tsOffset(parseInt(m[1]));
+  m=text.match(/(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?/);
+  if(m) return voiceDateText(year,parseInt(m[1]),parseInt(m[2]));
+  m=text.match(/(?:本周|下周|周|星期)([一二三四五六日天])/);
+  if(m){
+    var weekMap={一:1,二:2,三:3,四:4,五:5,六:6,日:0,天:0};
+    var target=weekMap[m[1]],diff=(target-now.getDay()+7)%7;
+    if(/下周/.test(m[0])) diff+=diff===0?7:7;
+    var wd=new Date(now);wd.setDate(now.getDate()+diff);
+    return wd.getFullYear()+'-'+S(wd.getMonth()+1)+'-'+S(wd.getDate());
+  }
+  return '';
+}
+
+function escapeVoiceRegExp(text){return text.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+
+function parseVoiceText(text){
+  var normalized=String(text||'').replace(/\s+/g,' ').trim();
+  var shop='',desc='',pri='',deadline=parseVoiceDeadline(normalized);
+
+  if(/[Pp]\s*0|P零|最高优先级|特急|非常紧急/.test(normalized)) pri='P0';
+  else if(/[Pp]\s*1|P一|高优先级|重要|尽快处理/.test(normalized)) pri='P1';
+  else if(/[Pp]\s*2|P二|低优先级|普通|一般/.test(normalized)) pri='P2';
+  else if(/无法营业|全店(?:瘫痪|不可用)|系统(?:完全)?(?:瘫痪|不可用)/.test(normalized)) pri='P0';
+  else if(/部分功能不可用|明显影响营业/.test(normalized)) pri='P1';
+  else if(/咨询|培训|优化建议/.test(normalized)) pri='P2';
+
+  var shopMatch=normalized.match(/(?:门店名称|店名|门店)\s*(?:是|为|叫|[:：])?\s*([^，,。；;]{2,40})/);
+  if(shopMatch){
+    shop=shopMatch[1].split(/(?:门店问题|问题描述|问题|故障|异常|情况|优先级|紧急程度|截止)/)[0].trim();
+  }
+  if(!shop){
+    shopMatch=normalized.match(/^([^，,。；;]{2,40}?(?:门店|店|球房|台球厅|俱乐部))(?=[，,。；;\s]|$)/);
+    if(shopMatch) shop=shopMatch[1].trim();
+  }
+
+  var descMatch=normalized.match(/(?:门店问题|问题描述|问题|故障|异常|情况)\s*(?:是|为|有|[:：])?\s*(.+)/);
+  if(descMatch) desc=descMatch[1];
+  else desc=normalized;
+  desc=desc.replace(/[，,。；;]?\s*(?:优先级|紧急程度)\s*(?:是|为|[:：])?\s*(?:[Pp]\s*[012]|P[零一二]|最高优先级|高优先级|低优先级|紧急|重要|普通)[\s\S]*$/,'');
+  desc=desc.replace(/[，,。；;]?\s*(?:[Pp]\s*[012]|P[零一二])\s*(?:紧急|重要|普通)?[\s\S]*$/,'');
+  desc=desc.replace(/[，,。；;]?\s*(?:截止(?:日期|时间)?|要求|计划)\s*(?:是|为|[:：])?[\s\S]*$/,'');
+  if(!descMatch&&shop){
+    desc=desc.replace(new RegExp('^(?:门店名称|店名|门店)?\\s*(?:是|为|叫|[:：])?\\s*'+escapeVoiceRegExp(shop)),'');
+  }
+  desc=desc.replace(/^\s*[，,。；;]?\s*(?:门店问题|问题描述|问题|故障|异常|情况)?\s*(?:是|为|有|[:：])?\s*/,'').replace(/[，,。；;\s]+$/,'').trim();
+  if(desc===shop) desc='';
+
+  var missing=[];
+  if(!shop) missing.push('门店名称');
+  if(!desc) missing.push('门店问题');
+  if(!pri) missing.push('紧急程度');
+  if(!deadline) missing.push('截止日期');
+  return {shop:shop,desc:desc,pri:pri,deadline:deadline,missing:missing};
+}
+
+function recognizeVoiceText(){
+  var transcript=document.getElementById('voice-transcript');
+  var text=(transcript?transcript.value:STATE.voiceText).trim();
+  if(!text){T('请先录音或输入需要识别的文字');return}
+  STATE.voiceText=text;
+  var currentShop=document.getElementById('iss-shop');
+  var currentDesc=document.getElementById('iss-desc');
+  var currentPri=document.getElementById('iss-pri');
+  var currentDeadline=document.getElementById('iss-deadline');
+  var parsed=parseVoiceText(text);
+  STATE.editingIssueId=null;
+  STATE.voiceParsed={
+    shop:parsed.shop||(currentShop?currentShop.value:''),
+    desc:parsed.desc||(currentDesc?currentDesc.value:''),
+    pri:parsed.pri||(currentPri?currentPri.value:'P2'),
+    deadline:parsed.deadline||(currentDeadline?currentDeadline.value:'')
+  };
+  STATE.voiceMissing=parsed.missing;
+  STATE.voiceParsedReady=true;
+  renderApp();
+  T(parsed.missing.length?'已填写可识别内容；请确认：'+parsed.missing.join('、'):'文字已识别并填入，请核对后添加');
+  if(parsed.missing.length){
+    var idMap={'门店名称':'iss-shop','门店问题':'iss-desc','紧急程度':'iss-pri','截止日期':'iss-deadline'};
+    setTimeout(function(){var el=document.getElementById(idMap[parsed.missing[0]]);if(el)el.focus()},50);
+  }
 }
 
 // ====== 日报快照 ======

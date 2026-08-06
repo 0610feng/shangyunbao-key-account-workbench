@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,viewport-fit=cover">
+<title>商云宝·客户管家台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --primary:#2563eb;--primary-light:#dbeafe;--primary-lighter:#eff6ff;--primary-dark:#1d4ed8;
+  --bg:#f8fafc;--card:#ffffff;--text:#1e293b;--text2:#475569;--text3:#94a3b8;
+  --border:#e2e8f0;--border2:#f1f5f9;
+  --danger:#ef4444;--danger2:#fef2f2;
+  --success:#10b981;--success2:#ecfdf5;
+  --warn:#f59e0b;--warn2:#fffbeb;
+  --r:12px;--rs:8px;--rxs:6px;
+  --shadow:0 1px 2px rgba(0,0,0,.05);
+  --shadow2:0 4px 6px -1px rgba(0,0,0,.07),0 2px 4px -2px rgba(0,0,0,.05);
+  --shadow3:0 10px 15px -3px rgba(0,0,0,.08),0 4px 6px -4px rgba(0,0,0,.05);
+  --t:.2s ease;
+}
+html{-webkit-text-size-adjust:100%}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  background:var(--bg);color:var(--text);line-height:1.6;font-size:15px;-webkit-font-smoothing:antialiased;
+}
+#app{max-width:920px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
+
+/* === LOGIN === */
+.login-wrap{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px}
+.login-card{background:var(--card);border-radius:var(--r);box-shadow:var(--shadow3);padding:36px 28px;width:100%;max-width:400px}
+.login-card h1{font-size:24px;text-align:center;margin-bottom:4px;color:var(--primary)}
+.login-card .login-sub{text-align:center;color:var(--text3);font-size:13px;margin-bottom:24px}
+.login-card .login-hint{text-align:center;font-size:12px;color:var(--text3);margin-top:16px;line-height:1.8}
+.login-card .login-hint code{background:var(--primary-lighter);padding:2px 6px;border-radius:4px;font-weight:700;color:var(--primary-dark)}
+.pass-input-box{position:relative}
+.pass-input-box input{
+  width:100%;padding:12px 16px;border:2px solid var(--border);border-radius:var(--rs);
+  font-size:20px;font-family:inherit;text-align:center;letter-spacing:6px;outline:none;
+  transition:var(--t);
+}
+.pass-input-box input:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+.login-error{color:var(--danger);font-size:13px;text-align:center;margin-top:8px;min-height:20px}
+
+/* === HEADER === */
+.app-header{
+  background:var(--card);border-bottom:1px solid var(--border);
+  padding:8px 16px;display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:20;box-shadow:var(--shadow);
+}
+.app-title{font-size:17px;font-weight:700;display:flex;align-items:center;gap:6px}
+.user-bar{display:flex;align-items:center;gap:8px}
+.user-name{font-size:13px;font-weight:600}
+.role-tag{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600}
+.role-tag.admin{background:var(--primary-light);color:var(--primary-dark)}
+.role-tag.member{background:var(--success2);color:var(--success)}
+.btn-logout{font-size:12px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:4px;background:none;border:none}
+.btn-logout:hover{background:var(--border2);color:var(--danger)}
+
+/* === TODAY BAR === */
+.today-bar{background:var(--card);margin:12px 16px;padding:12px 14px;border-radius:var(--r);border:1px solid var(--border);box-shadow:var(--shadow)}
+.today-bar .today-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.today-bar .today-ttl{font-size:14px;font-weight:700;display:flex;align-items:center;gap:6px}
+.ti-row{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px;border-bottom:1px solid var(--border2)}
+.ti-row:last-child{border-bottom:none}
+.ti-row.overdue{color:var(--danger)}
+.ti-pri{font-size:10px;padding:1px 6px;border-radius:8px;font-weight:600;flex-shrink:0}
+.ti-pri.P0{background:var(--danger2);color:var(--danger)}
+.ti-pri.P1{background:var(--warn2);color:#b45309}
+.ti-pri.P2{background:var(--border2);color:var(--text3)}
+.ti-text{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* === NAV TABS === */
+.nav-tabs{display:flex;gap:0;margin:0 16px;background:var(--card);border-radius:var(--r) var(--r) 0 0;overflow:hidden;
+  border:1px solid var(--border);border-bottom:none}
+.nav-tab{flex:1;padding:11px 4px;text-align:center;font-size:13px;font-weight:600;cursor:pointer;
+  color:var(--text3);border-bottom:2px solid transparent;background:var(--border2);transition:var(--t)}
+.nav-tab.active{color:var(--primary);background:var(--card);border-bottom-color:var(--primary)}
+.nav-tab:hover:not(.active){color:var(--text2)}
+.main-content{background:var(--card);margin:0 16px;padding:16px;border:1px solid var(--border);
+  border-top:none;border-radius:0 0 var(--r) var(--r);box-shadow:var(--shadow);flex:1}
+.tab-pane{display:none}
+.tab-pane.active{display:block}
+
+/* === CARDS & SHARED === */
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px;margin-bottom:10px;box-shadow:var(--shadow)}
+.card-ttl{font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:6px}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:5px;padding:8px 14px;border:1px solid var(--border);
+  border-radius:var(--rs);background:var(--card);color:var(--text);font-size:14px;font-weight:500;
+  cursor:pointer;transition:var(--t);min-height:44px;white-space:nowrap;font-family:inherit}
+.btn:hover{background:var(--border2);border-color:var(--text3)}
+.btn:active{transform:scale(.97)}
+.btn-sm{padding:6px 10px;font-size:13px;min-height:36px}
+.btn-xs{padding:3px 8px;font-size:11px;min-height:26px;border-radius:4px}
+.btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+.btn-primary:hover{background:var(--primary-dark)}
+.btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-success{background:var(--success);color:#fff;border-color:var(--success)}
+.btn-outline-danger{color:var(--danger);border-color:var(--danger);background:var(--danger2)}
+.btn-voice{background:var(--danger2);color:var(--danger);border-color:#fca5a5;position:relative}
+.btn-voice.recording{animation:pulse 1.2s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{box-shadow:0 0 0 8px rgba(239,68,68,0)}}
+.btn-block{display:flex;width:100%}
+
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;
+  border:1px solid var(--border);border-radius:var(--rxs);background:var(--card);color:var(--text2);
+  cursor:pointer;transition:var(--t);flex-shrink:0}
+.icon-btn:hover{background:var(--border2);color:var(--text)}
+.icon-btn svg{width:18px;height:18px}
+
+.form-group{margin-bottom:10px}
+.form-group label{display:block;font-size:13px;font-weight:600;color:var(--text2);margin-bottom:4px}
+.form-group input,.form-group select,.form-group textarea{
+  width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:var(--rs);
+  font-size:16px;font-family:inherit;color:var(--text);background:var(--card);transition:var(--t);outline:none}
+.form-group input:focus,.form-group select:focus,.form-group textarea:focus{border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light)}
+.form-group textarea{resize:vertical;min-height:60px}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.form-row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+
+.badge{font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.badge-p0{background:var(--danger2);color:var(--danger)}
+.badge-p1{background:var(--warn2);color:#b45309}
+.badge-p2{background:var(--border2);color:var(--text3)}
+.badge-progress{background:var(--primary-light);color:var(--primary-dark)}
+.badge-completed{background:var(--success2);color:var(--success)}
+
+.kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
+.kpi-card{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:12px;text-align:center}
+.kpi-card .kpi-val{font-size:28px;font-weight:800;line-height:1.2}
+.kpi-card .kpi-label{font-size:11px;color:var(--text3);margin-top:2px}
+.chart-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:var(--rs);padding:12px;text-align:center}
+.chart-box .chart-ttl{font-size:13px;font-weight:600;margin-bottom:8px}
+
+.date-filter{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap;align-items:center}
+
+.issue-card{border:1px solid var(--border);border-radius:var(--rs);padding:12px;margin-bottom:8px;transition:var(--t)}
+.issue-card:hover{border-color:var(--primary-light);box-shadow:var(--shadow2)}
+.issue-card .ic-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;margin-bottom:6px}
+.issue-card .ic-store{font-weight:700;font-size:14px}
+.issue-card .ic-desc{font-size:13px;color:var(--text2);margin-bottom:6px}
+.issue-card .ic-meta{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--text3);margin-bottom:8px}
+.issue-card .ic-actions{display:flex;gap:6px;flex-wrap:wrap}
+.issue-card.overdue{border-left:3px solid var(--danger)}
+
+.know-card{border:1px solid var(--border);border-radius:var(--rs);padding:12px;margin-bottom:8px}
+.know-card .kc-domain{font-size:11px;color:var(--primary);font-weight:600;margin-bottom:4px}
+.know-card .kc-title{font-size:14px;font-weight:700;margin-bottom:4px}
+.know-card .kc-code{font-size:11px;color:var(--text3);margin-bottom:4px}
+.know-card .kc-content{font-size:13px;color:var(--text2)}
+
+.daily-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.daily-date{font-size:16px;font-weight:700}
+.daily-summary{background:var(--border2);border-radius:var(--rs);padding:12px;margin-bottom:10px;font-size:13px}
+.daily-item{padding:4px 0;font-size:13px;border-bottom:1px solid var(--border2);display:flex;gap:8px;align-items:flex-start}
+
+.pwd-card{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--border);border-radius:var(--rs);margin-bottom:6px;gap:8px}
+.pwd-card .pw-info{flex:1;min-width:0}
+.pwd-card .pw-name{font-weight:600;font-size:14px}
+.pwd-card .pw-code{font-family:monospace;font-size:13px;color:var(--primary-dark);background:var(--primary-lighter);padding:2px 8px;border-radius:4px;letter-spacing:2px}
+.pwd-card .pw-meta{font-size:12px;color:var(--text3)}
+.pwd-card .pw-actions{display:flex;gap:4px;flex-shrink:0}
+
+.search-box{position:relative;margin-bottom:12px}
+.search-box input{padding-left:34px}
+.search-box svg{position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text3);width:16px;height:16px}
+
+/* Global SVG sizing */
+.btn svg,.today-ttl svg,.card-ttl svg,.daily-date svg,.voice-preview svg{width:16px;height:16px;vertical-align:middle;flex-shrink:0}
+.btn-xs svg{width:12px;height:12px}
+
+.empty{text-align:center;padding:30px 16px;color:var(--text3);font-size:14px}
+
+.voice-preview{background:var(--warn2);border:1px dashed #fcd34d;border-radius:var(--rs);padding:10px 12px;margin-bottom:10px;font-size:13px;color:#92400e;display:none}
+.voice-preview.show{display:block}
+
+.footer-actions{display:flex;gap:8px;justify-content:center;padding:16px;flex-wrap:wrap;border-top:1px solid var(--border);margin-top:16px}
+
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1e293b;color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;z-index:100;opacity:0;transition:opacity .3s;pointer-events:none;max-width:90vw;text-align:center}
+.toast.show{opacity:1}
+
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:50;display:flex;align-items:center;justify-content:center;padding:20px}
+.modal-box{background:var(--card);border-radius:var(--r);padding:24px;width:100%;max-width:420px;box-shadow:var(--shadow3)}
+.modal-box h3{font-size:16px;margin-bottom:12px}
+.modal-actions{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+
+.import-section{background:var(--primary-lighter);border:1px dashed var(--primary-light);border-radius:var(--rs);padding:12px 14px;margin-bottom:12px}
+.import-section .is-title{font-size:13px;font-weight:600;color:var(--primary-dark);margin-bottom:6px}
+.import-section .is-desc{font-size:12px;color:var(--text2);margin-bottom:8px}
+.import-info{font-size:12px;color:var(--primary-dark);margin-top:6px;background:var(--primary-light);padding:6px 10px;border-radius:4px}
+
+@media(max-width:768px){
+  .kpi-row{grid-template-columns:repeat(2,1fr)}
+  .chart-row{grid-template-columns:1fr}
+  .form-row,.form-row3{grid-template-columns:1fr}
+  .nav-tab{font-size:12px;padding:10px 2px}
+  .main-content{padding:12px 10px}
+  .login-card{padding:24px 16px}
+}
+@supports(padding-bottom:env(safe-area-inset-bottom)){
+  #app{padding-bottom:env(safe-area-inset-bottom)}
+}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="./config.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" class="toast"></div>
+
+<script>
+// ====== SVG 图标库 ======
+var I = {
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>',
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>',
+  upload: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>',
+  user: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  users: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>',
+  clipboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 4h2a2 2 0 012 2v14a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h2"/><rect x="8" y="2" width="8" height="4" rx="1"/></svg>',
+  dashboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>',
+  book: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>',
+  logOut: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>'
+};
+
+// ====== 核心状态 ======
+var STATE = {
+  user: null,       // {userId, name, department, role:'admin'|'member', canViewAll}
+  data: {issues:[], knowledge:[], archives:[], dailySupps:{}},
+  importedData: {}, // {userId: {issues, archives, ...}} 管理员导入的成员数据
+  dashRange: 'today',
+  dashStart: '',
+  dashEnd: '',
+  tab: 'dashboard',
+  editingIssueId: null,
+  voiceText: '',
+  voiceParsed: {shop:'', desc:'', pri:'P2', deadline:''}
+};
+
+// ====== 工具函数 ======
+function gid(){return 'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+function ts(){var d=new Date();return d.getFullYear()+'-'+S(d.getMonth()+1)+'-'+S(d.getDate())}
+function tsOffset(n){var d=new Date();d.setDate(d.getDate()+n);return d.getFullYear()+'-'+S(d.getMonth()+1)+'-'+S(d.getDate())}
+function S(n){return String(n).padStart(2,'0')}
+function T(msg){var e=document.getElementById('toast');e.textContent=msg;e.classList.add('show');setTimeout(function(){e.classList.remove('show')},2000)}
+function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+// ====== Supabase 云端认证与数据层 ======
+var CLOUD_CONFIG = window.WORKBENCH_CONFIG || {};
+var db = (window.supabase && CLOUD_CONFIG.supabaseUrl && CLOUD_CONFIG.supabaseAnonKey)
+  ? window.supabase.createClient(CLOUD_CONFIG.supabaseUrl, CLOUD_CONFIG.supabaseAnonKey, {
+      auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:true}
+    })
+  : null;
+var TEAM_PROFILES = [];
+var saveQueue = Promise.resolve();
+
+function emptyUserData(){return {issues:[],knowledge:[],archives:[],dailySupps:{}}}
+function normalizeUserData(d){
+  d=d||{};
+  return {issues:d.issues||[],knowledge:d.knowledge||[],archives:d.archives||[],dailySupps:d.dailySupps||{}};
+}
+function profileToUser(p){
+  return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all};
+}
+function profileForUi(p){
+  return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all,createdAt:(p.created_at||'').slice(0,10)};
+}
+async function usernameToEmail(username){
+  var normalized=username.trim().toLowerCase();
+  var bytes=new TextEncoder().encode(normalized);
+  if(window.crypto&&window.crypto.subtle){
+    var digest=await window.crypto.subtle.digest('SHA-256',bytes);
+    var hex=Array.from(new Uint8Array(digest)).map(function(b){return b.toString(16).padStart(2,'0')}).join('');
+    return 'u'+hex.slice(0,40)+'@syb-workbench.local';
+  }
+  var h=2166136261;
+  for(var i=0;i<bytes.length;i++){h^=bytes[i];h=Math.imul(h,16777619)}
+  return 'u'+(h>>>0).toString(16)+'@syb-workbench.local';
+}
+function loadPasscodes(){return TEAM_PROFILES.slice()}
+function savePasscodes(){return}
+function initDefaultPasscodes(){return TEAM_PROFILES}
+function addPasscode(){T('请让成员在登录页自行注册');return null}
+function deletePasscode(){T('为保护历史数据，成员账号请在 Supabase 后台停用')}
+async function updatePasscode(userId,updates){
+  if(!db||!STATE.user||STATE.user.role!=='admin') return false;
+  var payload={name:updates.name,department:updates.department||'',role:updates.role||'member',can_view_all:!!updates.canViewAll};
+  var result=await db.from('profiles').update(payload).eq('id',userId);
+  if(result.error){T('成员信息保存失败：'+result.error.message);return false}
+  await loadImportedData();
+  return true;
+}
+
+function dsKey(){return STATE.user ? 'Supabase 云端 / '+STATE.user.userId : 'Supabase 云端'}
+function setCloudStatus(text,color){
+  var el=document.getElementById('cloud-state');
+  if(el){el.textContent=text;el.style.color=color||'var(--success)'}
+}
+async function loadUserData(){
+  STATE.data=emptyUserData();
+  if(!db||!STATE.user) return;
+  var result=await db.from('workbench_data').select('payload').eq('user_id',STATE.user.userId).maybeSingle();
+  if(result.error) throw result.error;
+  if(result.data&&result.data.payload){
+    STATE.data=normalizeUserData(result.data.payload);
+  }else{
+    var created=await db.from('workbench_data').upsert({user_id:STATE.user.userId,payload:STATE.data},{onConflict:'user_id'});
+    if(created.error) throw created.error;
+  }
+}
+function saveUserData(){
+  if(!db||!STATE.user) return Promise.resolve();
+  var userId=STATE.user.userId;
+  var snapshot=JSON.parse(JSON.stringify(normalizeUserData(STATE.data)));
+  setCloudStatus('正在保存…','var(--warning)');
+  saveQueue=saveQueue.catch(function(){}).then(async function(){
+    var result=await db.from('workbench_data').upsert({user_id:userId,payload:snapshot,updated_at:new Date().toISOString()},{onConflict:'user_id'});
+    if(result.error) throw result.error;
+    setCloudStatus('已同步云端','var(--success)');
+  }).catch(function(error){
+    console.error('[商云宝] 云端保存失败',error);
+    setCloudStatus('云端保存失败','var(--danger)');
+    T('云端保存失败，请检查网络后重试');
+  });
+  return saveQueue;
+}
+function autoSave(){return saveUserData()}
+
+// ====== 团队云端数据 ======
+async function loadImportedData(){
+  STATE.importedData={};
+  TEAM_PROFILES=[];
+  if(!db||!STATE.user) return;
+  var profilesResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,created_at').order('created_at',{ascending:true});
+  if(profilesResult.error) throw profilesResult.error;
+  TEAM_PROFILES=(profilesResult.data||[]).map(profileForUi);
+  if(STATE.user.role!=='admin') return;
+  var dataResult=await db.from('workbench_data').select('user_id,payload,updated_at');
+  if(dataResult.error) throw dataResult.error;
+  (dataResult.data||[]).forEach(function(row){
+    if(row.user_id===STATE.user.userId) return;
+    var p=TEAM_PROFILES.find(function(item){return item.userId===row.user_id});
+    if(!p) return;
+    STATE.importedData[row.user_id]={name:p.name,department:p.department,data:normalizeUserData(row.payload),importedAt:(row.updated_at||'').slice(0,10)};
+  });
+}
+function saveImportedData(){return}
+function importMemberData(name, department, jsonStr){
+  try{
+    var d=JSON.parse(jsonStr);
+    if(!d.issues&&!d.archives){T('无效的数据格式，请确认导出了正确的JSON文件');return false}
+    var uid='imp_'+gid();
+    STATE.importedData[uid]={name:name,department:department,data:d,importedAt:ts()};
+    saveImportedData();
+    T('已导入 '+name+' 的数据，驾驶舱将包含这些数据');
+    return true;
+  }catch(e){T('JSON解析失败，请检查文件');return false}
+}
+function removeImportedData(uid){
+  delete STATE.importedData[uid];
+  saveImportedData();
+}
+function getMergedIssues(){
+  var all = STATE.data.issues.slice();
+  for(var uid in STATE.importedData){
+    var imp = STATE.importedData[uid];
+    if(imp.data&&imp.data.issues){
+      var memberIssues = imp.data.issues.map(function(iss){
+        var copy = {};
+        for(var k in iss) copy[k]=iss[k];
+        copy._fromMember = imp.name;
+        copy._fromDept = imp.department;
+        return copy;
+      });
+      all = all.concat(memberIssues);
+    }
+  }
+  return all;
+}
+function getMergedArchives(){
+  var all = STATE.data.archives.slice();
+  for(var uid in STATE.importedData){
+    var imp = STATE.importedData[uid];
+    if(imp.data&&imp.data.archives){
+      all = all.concat(imp.data.archives);
+    }
+  }
+  return all;
+}
+
+// ====== 驾驶舱数据 ======
+function getDashIssues(){
+  var all = getMergedIssues();
+  return filterByDate(all);
+}
+function filterByDate(arr){
+  if(STATE.dashRange==='all') return arr;
+  var start, end;
+  if(STATE.dashRange==='today'){start=ts();end=ts()}
+  else if(STATE.dashRange==='7d'){start=tsOffset(-6);end=ts()}
+  else if(STATE.dashRange==='30d'){start=tsOffset(-29);end=ts()}
+  else if(STATE.dashRange==='custom'){start=STATE.dashStart;end=STATE.dashEnd}
+  return arr.filter(function(item){
+    var d=item.createdAt||item.deadline||'';
+    return d>=start&&d<=end;
+  });
+}
+
+function dashStats(){
+  var issues = getDashIssues();
+  var total=issues.length;
+  var open=0,inProg=0,done=0,overdue=0;
+  var pt=new Date();pt.setHours(0,0,0,0);
+  for(var i=0;i<issues.length;i++){
+    var s=issues[i].progress||'';
+    if(s==='已完结') done++;
+    else if(s==='未开始'||s==='') open++;
+    else if(s==='跟进中'||s==='阶段性完成') inProg++;
+    if(issues[i].deadline){
+      var dl=new Date(issues[i].deadline);dl.setHours(0,0,0,0);
+      if(dl<pt&&s!=='已完结') overdue++;
+    }
+  }
+  return {total:total,open:open,inProg:inProg,done:done,overdue:overdue};
+}
+function dashPieData(){
+  var s=dashStats();
+  return [
+    {label:'待开始',v:s.open,c:'#94a3b8'},
+    {label:'跟进中',v:s.inProg,c:'#2563eb'},
+    {label:'已完成',v:s.done,c:'#10b981'}
+  ];
+}
+function dashBarData(){
+  var issues=getDashIssues();
+  var counts={P0:0,P1:0,P2:0};
+  for(var i=0;i<issues.length;i++){
+    var p=issues[i].priority||'';
+    if(p==='P0') counts.P0++;else if(p==='P1') counts.P1++;else counts.P2++;
+  }
+  return [{label:'P0 紧急',v:counts.P0,c:'#ef4444'},{label:'P1 重要',v:counts.P1,c:'#f59e0b'},{label:'P2 普通',v:counts.P2,c:'#94a3b8'}];
+}
+
+// ====== SVG 图表 ======
+function svgPie(data){
+  var total=data.reduce(function(s,d){return s+d.v},0);
+  if(total===0) return '<div style="color:#94a3b8;padding:30px">暂无数据</div>';
+  var cx=80,cy=80,r=65,ir=40;
+  var angle=0,slices='';
+  for(var i=0;i<data.length;i++){
+    var a=(data[i].v/total)*Math.PI*2;
+    var x1=cx+r*Math.sin(angle),y1=cy-r*Math.cos(angle);
+    angle+=a;
+    var x2=cx+r*Math.sin(angle),y2=cy-r*Math.cos(angle);
+    var la=a>Math.PI?1:0;
+    slices+='<path d="M'+cx+','+cy+' L'+x1+','+y1+' A'+r+','+r+' 0 '+la+',1 '+x2+','+y2+' Z" fill="'+data[i].c+'"/>';
+  }
+  var legend='';
+  for(var j=0;j<data.length;j++){
+    legend+='<div style="display:inline-flex;align-items:center;gap:4px;margin:0 8px;font-size:11px">'+
+      '<span style="width:10px;height:10px;border-radius:2px;background:'+data[j].c+';display:inline-block"></span>'+
+      data[j].label+' '+data[j].v+'</div>';
+  }
+  return '<svg viewBox="0 0 160 160" style="max-width:200px"><circle cx="'+cx+'" cy="'+cy+'" r="'+ir+'" fill="#fff"/>'+slices+'</svg><div style="margin-top:6px">'+legend+'</div>';
+}
+
+function svgBar(data){
+  var max=Math.max.apply(null,data.map(function(d){return d.v}));
+  if(max===0) max=1;
+  var w=260,h=140,barW=50,gap=30,pad=10;
+  var bars='';
+  for(var i=0;i<data.length;i++){
+    var bh=(data[i].v/max)*(h-40);
+    var bx=pad+i*(barW+gap);
+    var by=h-20-bh;
+    bars+='<rect x="'+bx+'" y="'+by+'" width="'+barW+'" height="'+bh+'" rx="4" fill="'+data[i].c+'"/>';
+    bars+='<text x="'+(bx+barW/2)+'" y="'+(by-6)+'" text-anchor="middle" font-size="12" font-weight="700" fill="#1e293b">'+data[i].v+'</text>';
+    bars+='<text x="'+(bx+barW/2)+'" y="'+(h-4)+'" text-anchor="middle" font-size="11" fill="#64748b">'+data[i].label+'</text>';
+  }
+  return '<svg viewBox="0 0 '+w+' '+h+'" style="max-width:300px">'+bars+'</svg>';
+}
+
+// ====== "今天要处理" ======
+function getTodayItems(){
+  var items=[];
+  var today=new Date();today.setHours(0,0,0,0);
+  var issues=getDashIssues();
+  for(var i=0;i<issues.length;i++){
+    var iss=issues[i];
+    if(iss.progress==='已完结') continue;
+    if(iss.deadline){
+      var dl=new Date(iss.deadline);dl.setHours(0,0,0,0);
+      if(dl<today){items.push({issue:iss,type:'overdue'});continue}
+      if(dl.getTime()===today.getTime()){items.push({issue:iss,type:'today'});continue}
+    }
+  }
+  items.sort(function(a,b){
+    if(a.type==='overdue'&&b.type!=='overdue') return -1;
+    if(a.type!=='overdue'&&b.type==='overdue') return 1;
+    return 0;
+  });
+  return items;
+}
+
+// ====== 初始示例数据 ======
+function getSampleData(){
+  return {issues:[
+    {id:gid(),shopName:'华东区-杭州西湖店',shopDesc:'POS收银系统显示营业额与后台报表偏差超15%',priority:'P0',deadline:tsOffset(-2),progress:'跟进中',createdAt:tsOffset(-5),_sample:true},
+    {id:gid(),shopName:'华南区-深圳南山店',shopDesc:'商品模板未同步到新开业门店，3个SKU缺失',priority:'P1',deadline:tsOffset(3),progress:'未开始',createdAt:tsOffset(-1),_sample:true},
+    {id:gid(),shopName:'华北区-北京朝阳店',shopDesc:'分账设置中供应商账户信息错误导致自动分账失败',priority:'P0',deadline:tsOffset(1),progress:'阶段性完成',createdAt:tsOffset(-3),_sample:true},
+    {id:gid(),shopName:'西南区-成都天府店',shopDesc:'会员等级积分计算与营销中心配置不一致',priority:'P2',deadline:tsOffset(7),progress:'未开始',createdAt:ts(),_sample:true}
+  ],knowledge:[
+    {id:gid(),domain:'财务与分账',code:'B107-B119',title:'营业额计算公式',content:'营业额=商品销售总额-退款金额。不含优惠券和积分抵扣部分。',_sample:true},
+    {id:gid(),domain:'商品与库存',code:'B023-B030',title:'库存流转规则',content:'总部仓库出货→门店在途（24h内确认）→门店在库。超24h未确认自动标记异常。',_sample:true},
+    {id:gid(),domain:'营销与会员',code:'B032-B042',title:'积分计算规则',content:'消费1元=1积分，退款扣回。等级升降周期为自然月。',_sample:true}
+  ],archives:[],dailySupps:{}}
+}
+
+function initSampleData(){
+  // 检查是否存在任何用户数据（不仅仅 issues + knowledge）
+  var hasData = STATE.data.issues.length > 0 || STATE.data.knowledge.length > 0 
+    || STATE.data.archives.length > 0 || Object.keys(STATE.data.dailySupps||{}).length > 0;
+  if(!hasData){
+    console.log('[商云宝] 无用户数据，插入示例');
+    STATE.data = getSampleData();
+    saveUserData();
+  } else {
+    console.log('[商云宝] 已有用户数据，跳过示例');
+  }
+}
+function clearSampleData(){
+  STATE.data.issues = STATE.data.issues.filter(function(i){return !i._sample});
+  STATE.data.knowledge = STATE.data.knowledge.filter(function(k){return !k._sample});
+  saveUserData();
+  T('示例数据已清除');
+  renderApp();
+}
+
+// ====== 登录 / 注册 ======
+function showLogin(errorMsg){
+  STATE.user = null;
+  STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
+  STATE.importedData = {};
+  var h='<div class="login-wrap"><div class="login-card">';
+  h+='<h1><span style="display:inline-block;width:22px;height:22px;vertical-align:middle;margin-right:5px">'+I.lock+'</span>商云宝·客户管家台</h1>';
+  h+='<p class="login-sub">大客户经理专属工作台 · 数据云端同步</p>';
+
+  // Tabs
+  h+='<div style="display:flex;gap:0;margin:20px 0 16px;border:1px solid var(--border);border-radius:var(--rs);overflow:hidden">';
+  h+='<div id="tab-login-btn" style="flex:1;text-align:center;padding:10px;font-size:14px;font-weight:600;cursor:pointer;background:var(--primary);color:#fff" onclick="switchLoginTab(\'login\')">登录</div>';
+  h+='<div id="tab-register-btn" style="flex:1;text-align:center;padding:10px;font-size:14px;font-weight:600;cursor:pointer;background:var(--border2);color:var(--text3)" onclick="switchLoginTab(\'register\')">注册</div>';
+  h+='</div>';
+
+  // Login panel: username + password
+  h+='<div id="login-panel">';
+  h+='<div class="form-group"><label>用户名</label><input id="login-user" placeholder="请输入用户名" maxlength="20" autofocus autocomplete="off"></div>';
+  h+='<div class="form-group"><label>密码</label><input type="password" id="login-pass" placeholder="请输入密码" maxlength="20" autocomplete="off"></div>';
+  if(errorMsg) h+='<p class="login-error">'+errorMsg+'</p>';
+  else h+='<p class="login-error"></p>';
+  h+='<button class="btn btn-primary btn-block" style="margin-top:10px" onclick="doLogin()">进入工作台</button>';
+  h+='</div>';
+
+  // Register panel (hidden by default)
+  h+='<div id="register-panel" style="display:none">';
+  h+='<div class="form-group"><label>姓名</label><input id="reg-name" placeholder="你的真实姓名" maxlength="20"></div>';
+  h+='<div class="form-group"><label>用户名（登录用）</label><input id="reg-user" placeholder="字母数字组合" maxlength="20"></div>';
+  h+='<div class="form-group"><label>部门</label><input id="reg-dept" placeholder="如：华东大区" maxlength="30"></div>';
+  h+='<div class="form-group"><label>设置密码</label><input type="password" id="reg-pass" placeholder="至少6位，用于登录" maxlength="40"></div>';
+  h+='<div class="form-group"><label>确认密码</label><input type="password" id="reg-pass2" placeholder="再次输入密码" maxlength="20"></div>';
+  h+='<p class="login-error" id="reg-error"></p>';
+  h+='<button class="btn btn-primary btn-block" style="margin-top:10px" onclick="doRegister()">完成注册并登录</button>';
+  h+='</div>';
+
+  h+='</div></div>';
+  document.getElementById('app').innerHTML=h;
+  document.getElementById('login-user').addEventListener('keydown',function(e){if(e.key==='Enter'){document.getElementById('login-pass').focus()}});
+  document.getElementById('login-pass').addEventListener('keydown',function(e){if(e.key==='Enter')doLogin()});
+  var rp2=document.getElementById('reg-pass2');
+  if(rp2) rp2.addEventListener('keydown',function(e){if(e.key==='Enter')doRegister()});
+  setTimeout(function(){
+    var inp=document.getElementById('login-user');if(inp)inp.focus();
+  },200);
+}
+
+function switchLoginTab(tab){
+  var loginPanel=document.getElementById('login-panel');
+  var regPanel=document.getElementById('register-panel');
+  var loginBtn=document.getElementById('tab-login-btn');
+  var regBtn=document.getElementById('tab-register-btn');
+  if(tab==='login'){
+    loginPanel.style.display='block';
+    regPanel.style.display='none';
+    loginBtn.style.background='var(--primary)';loginBtn.style.color='#fff';
+    regBtn.style.background='var(--border2)';regBtn.style.color='var(--text3)';
+    var lu=document.getElementById('login-user');if(lu)lu.focus();
+  } else {
+    loginPanel.style.display='none';
+    regPanel.style.display='block';
+    regBtn.style.background='var(--primary)';regBtn.style.color='#fff';
+    loginBtn.style.background='var(--border2)';loginBtn.style.color='var(--text3)';
+    var rn=document.getElementById('reg-name');if(rn)rn.focus();
+  }
+}
+
+async function startUserSession(authUser){
+  var profileResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,created_at').eq('id',authUser.id).single();
+  if(profileResult.error) throw profileResult.error;
+  STATE.user=profileToUser(profileResult.data);
+  await loadUserData();
+  await loadImportedData();
+  initSampleData();
+  renderApp();
+}
+
+async function doRegister(){
+  var name=document.getElementById('reg-name').value.trim();
+  var username=document.getElementById('reg-user').value.trim();
+  var dept=document.getElementById('reg-dept').value.trim();
+  var pass=document.getElementById('reg-pass').value.trim();
+  var pass2=document.getElementById('reg-pass2').value.trim();
+  var errEl=document.getElementById('reg-error');
+  if(!name){errEl.textContent='请填写姓名';return}
+  if(!username){errEl.textContent='请设置用户名';return}
+  if(!/^[a-zA-Z0-9\u4e00-\u9fa5]+$/.test(username)){errEl.textContent='用户名只能使用字母、数字或中文';return}
+  if(!pass||pass.length<6){errEl.textContent='密码至少6位';return}
+  if(pass!==pass2){errEl.textContent='两次输入的密码不一致';return}
+  if(!db){errEl.textContent='云端连接尚未配置';return}
+  errEl.textContent='正在创建云端账号…';
+  try{
+    var email=await usernameToEmail(username);
+    var result=await db.auth.signUp({email:email,password:pass,options:{data:{username:username,name:name,department:dept}}});
+    if(result.error) throw result.error;
+    if(!result.data.session){throw new Error('注册成功但尚未自动登录，请联系管理员关闭邮箱确认')}
+    await startUserSession(result.data.user);
+    T('注册成功，欢迎 '+name+'！');
+  }catch(error){
+    console.error('[商云宝] 注册失败',error);
+    var msg=(error&&error.message)||'';
+    errEl.textContent=(msg.indexOf('already')>=0||msg.indexOf('Database error')>=0)?'该用户名已被注册，请换一个':'注册失败：'+msg;
+  }
+}
+
+async function doLogin(){
+  var uname=document.getElementById('login-user').value.trim();
+  var pwd=document.getElementById('login-pass').value.trim();
+  if(!uname){showLogin('请输入用户名');return}
+  if(!pwd){showLogin('请输入密码');return}
+  if(!db){showLogin('云端连接尚未配置');return}
+  try{
+    var email=await usernameToEmail(uname);
+    var result=await db.auth.signInWithPassword({email:email,password:pwd});
+    if(result.error) throw result.error;
+    await startUserSession(result.data.user);
+    T('欢迎回来，数据已从云端恢复！');
+  }catch(error){
+    console.error('[商云宝] 登录失败',error);
+    showLogin('用户名或密码错误，请检查后重试');
+  }
+}
+
+async function doLogout(){
+  if(!confirm('确定退出登录？')) return;
+  await saveQueue.catch(function(){});
+  if(db) await db.auth.signOut();
+  STATE.user = null;
+  STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
+  STATE.importedData = {};
+  TEAM_PROFILES=[];
+  showLogin();
+}
+
+// ====== 添加口令（管理员） ======
+function showAddPasscode(){
+  var h='<h3>新增成员</h3>';
+  h+='<p style="font-size:14px;line-height:1.8;color:var(--text2)">请让新成员打开登录页，点击「注册」并设置自己的用户名和密码。注册完成后，账号会自动出现在这里；成员只能访问自己的业务数据，管理员可在驾驶舱查看团队汇总。</p>';
+  h+='<div class="modal-actions">'+
+    '<button class="btn btn-primary" onclick="closeModal()">我知道了</button></div>';
+  showModal(h);
+}
+
+function editPasscode(userId){
+  var list=loadPasscodes();
+  var p=null;
+  for(var i=0;i<list.length;i++){if(list[i].userId===userId){p=list[i];break}}
+  if(!p) return;
+  var canEditRole = p.userId!==STATE.user.userId;
+  var h='<h3>编辑成员</h3>';
+  h+='<div class="form-group"><label>姓名</label><input id="ap-name" value="'+esc(p.name||'')+'"></div>';
+  h+='<div class="form-group"><label>用户名</label><input value="'+esc(p.username||'')+'" readonly style="background:var(--border2)"></div>';
+  h+='<div class="form-group"><label>部门</label><input id="ap-dept" value="'+esc(p.department||'')+'"></div>';
+  if(canEditRole){
+    h+='<div class="form-group"><label>角色</label><select id="ap-role"><option value="member" '+(p.role==='member'?'selected':'')+'>成员</option><option value="admin" '+(p.role==='admin'?'selected':'')+'>管理员</option></select></div>';
+  }
+  h+='<p style="font-size:12px;color:var(--text3)">用户名和密码由成员本人管理；管理员不会看到成员密码。</p>';
+  h+='<input type="hidden" id="ap-userid" value="'+userId+'">';
+  h+='<input type="hidden" id="ap-current-role" value="'+esc(p.role||'member')+'">';
+  h+='<div class="modal-actions">'+
+    '<button class="btn" onclick="closeModal()">取消</button>'+
+    '<button class="btn btn-primary" onclick="savePasscodeForm()">保存</button></div>';
+  showModal(h);
+}
+
+async function savePasscodeForm(){
+  var name=document.getElementById('ap-name').value.trim();
+  var dept=document.getElementById('ap-dept').value.trim();
+  var userId=document.getElementById('ap-userid').value;
+  var roleEl=document.getElementById('ap-role');
+  var currentRole=document.getElementById('ap-current-role').value;
+  var role=roleEl?roleEl.value:currentRole;
+  if(!name){T('姓名不能为空');return}
+  var ok=await updatePasscode(userId,{name:name,department:dept,role:role,canViewAll:role==='admin'});
+  if(!ok) return;
+  if(userId===STATE.user.userId){STATE.user.name=name;STATE.user.department=dept}
+  closeModal();
+  T('成员信息已更新');
+  renderApp();
+}
+
+// ====== Modal ======
+function showModal(inner){document.getElementById('app').insertAdjacentHTML('beforeend','<div class="modal-mask" onclick="if(event.target===this)closeModal()"><div class="modal-box">'+inner+'</div></div>')}
+function closeModal(){var m=document.querySelector('.modal-mask');if(m)m.remove()}
+
+// ====== Toast ======
+function showToast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},2000)}
+
+// ====== 主导航 ======
+function switchTab(tab){
+  STATE.tab = tab;
+  var tabs=document.querySelectorAll('.nav-tab');
+  for(var i=0;i<tabs.length;i++){tabs[i].classList.remove('active')}
+  var target=document.querySelector('.nav-tab[data-tab="'+tab+'"]');
+  if(target) target.classList.add('active');
+  var panes=document.querySelectorAll('.tab-pane');
+  for(var j=0;j<panes.length;j++){panes[j].classList.remove('active')}
+  var tp=document.getElementById('pane-'+tab);
+  if(tp) tp.classList.add('active');
+}
+
+// ====== 主渲染 ======
+function renderApp(){
+  if(!STATE.user){showLogin();return}
+  var isAdmin=STATE.user.role==='admin';
+  var tabs=[
+    {id:'dashboard',label:'驾驶舱',icon:I.dashboard},
+    {id:'issues',label:'问题排查',icon:I.alert},
+    {id:'daily',label:'日报快照',icon:I.clipboard},
+    {id:'knowledge',label:'知识速查',icon:I.book}
+  ];
+  if(isAdmin) tabs.push({id:'team',label:'团队管理',icon:I.users});
+
+  var h='';
+  // Header
+  h+='<div class="app-header">';
+  h+='<div class="app-title"><span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.shield+'</span>商云宝·客户管家台</div>';
+  h+='<div class="user-bar">';
+  h+='<span class="user-name">'+esc(STATE.user.name)+'</span>';
+  h+='<span class="role-tag '+(isAdmin?'admin':'member')+'">'+(isAdmin?'管理员':'成员')+'</span>';
+  h+='<button class="btn-logout" onclick="doLogout()">退出</button>';
+  h+='</div></div>';
+
+  // Today bar
+  h+=renderTodayBar();
+
+  // Nav tabs
+  h+='<div class="nav-tabs">';
+  for(var ti=0;ti<tabs.length;ti++){
+    var t=tabs[ti];
+    h+='<div class="nav-tab'+(STATE.tab===t.id?' active':'')+'" data-tab="'+t.id+'" onclick="switchTab(\''+t.id+'\')">'+
+      '<span style="display:flex;align-items:center;justify-content:center;gap:3px">'+
+      '<span style="width:14px;height:14px;display:inline-block">'+t.icon+'</span>'+t.label+'</span></div>';
+  }
+  h+='</div>';
+
+  // Content
+  h+='<div class="main-content">';
+  h+='<div class="tab-pane'+(STATE.tab==='dashboard'?' active':'')+'" id="pane-dashboard">'+renderDashboard()+'</div>';
+  h+='<div class="tab-pane'+(STATE.tab==='issues'?' active':'')+'" id="pane-issues">'+renderIssues()+'</div>';
+  h+='<div class="tab-pane'+(STATE.tab==='daily'?' active':'')+'" id="pane-daily">'+renderDaily()+'</div>';
+  h+='<div class="tab-pane'+(STATE.tab==='knowledge'?' active':'')+'" id="pane-knowledge">'+renderKnowledge()+'</div>';
+  if(isAdmin) h+='<div class="tab-pane'+(STATE.tab==='team'?' active':'')+'" id="pane-team">'+renderTeam()+'</div>';
+  h+='</div>';
+
+  // Footer
+  h+='<div class="footer-actions">';
+  h+='<button class="btn btn-sm" onclick="exportData()">'+I.download+' 导出备份</button>';
+  h+='<button class="btn btn-sm" onclick="document.getElementById(\'import-file\').click()">'+I.upload+' 导入恢复</button>';
+  h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' 清空数据</button>';
+  if(STATE.data.issues.some(function(i){return i._sample})||STATE.data.knowledge.some(function(k){return k._sample})){
+    h+='<button class="btn btn-sm" onclick="clearSampleData()">'+I.refresh+' 清空示例</button>';
+  }
+  h+='<input type="file" id="import-file" style="display:none" accept=".json" onchange="importData(this)">';
+  h+='</div>';
+
+  // 数据状态指示器
+  var realIssues = STATE.data.issues.filter(function(i){return !i._sample}).length;
+  var realKnow = STATE.data.knowledge.filter(function(k){return !k._sample}).length;
+  h+='<div id="data-status" style="text-align:center;font-size:11px;color:var(--text3);padding:4px 0 10px;border-top:1px solid var(--border2);margin:0 16px">';
+  h+='云端存储：<span id="cloud-state" style="color:var(--success);font-weight:600">已连接 Supabase</span> · <span style="color:var(--success);font-weight:600">'+realIssues+'</span> 条问题 · <span style="color:var(--success);font-weight:600">'+realKnow+'</span> 条知识 · <span style="color:var(--success);font-weight:600">'+STATE.data.archives.length+'</span> 条归档';
+  h+='</div>';
+
+  document.getElementById('app').innerHTML = h;
+
+  // Backup reminder
+  var totalCount = STATE.data.issues.length + STATE.data.archives.length;
+  if(totalCount>=30){
+    var todayBar=document.querySelector('.today-bar');
+    if(todayBar){
+      var reminder=document.createElement('div');
+      reminder.style.cssText='font-size:12px;color:#b45309;margin-top:6px;text-align:center';
+      reminder.textContent='数据已积累'+totalCount+'条，建议导出备份';
+      todayBar.appendChild(reminder);
+    }
+  }
+}
+
+// ====== Today Bar ======
+function renderTodayBar(){
+  var items=getTodayItems();
+  var h='<div class="today-bar"><div class="today-hdr">';
+  h+='<span class="today-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 今天要处理</span>';
+  h+='<span style="font-size:12px;color:var(--text3)">'+items.length+' 项</span>';
+  h+='</div>';
+  if(items.length===0) h+='<div style="font-size:13px;color:var(--text3);padding:8px 0">暂无待处理项</div>';
+  for(var i=0;i<Math.min(items.length,5);i++){
+    var it=items[i];
+    var cls=it.type==='overdue'?' overdue':'';
+    h+='<div class="ti-row'+cls+'">';
+    h+='<span class="ti-pri '+it.issue.priority+'">'+esc(it.issue.priority||'P2')+'</span>';
+    h+='<span class="ti-text">'+esc(it.issue.shopName||'未知门店')+' - '+esc((it.issue.shopDesc||'').slice(0,24))+'</span>';
+    if(it.type==='overdue') h+='<span style="font-size:11px;color:#ef4444;flex-shrink:0">逾期</span>';
+    h+='<button class="btn btn-xs btn-primary" onclick="switchTab(\'issues\')">处理</button>';
+    h+='</div>';
+  }
+  h+='</div>';
+  return h;
+}
+
+// ====== 驾驶舱 ======
+function renderDashboard(){
+  var s=dashStats();
+  var pie=dashPieData(),bar=dashBarData();
+  var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.dashboard+'</span> 驾驶舱概览</div>';
+
+  // Date filter
+  h+='<div class="date-filter">';
+  var ranges=[{v:'today',l:'今日'},{v:'7d',l:'近7天'},{v:'30d',l:'近30天'},{v:'all',l:'全部'}];
+  for(var i=0;i<ranges.length;i++){
+    h+='<button class="btn btn-xs'+(STATE.dashRange===ranges[i].v?' btn-primary':'')+
+      '" onclick="STATE.dashRange=\''+ranges[i].v+'\';renderApp()">'+ranges[i].l+'</button>';
+  }
+  if(STATE.dashRange==='custom'){
+    h+='<input type="date" value="'+STATE.dashStart+'" onchange="STATE.dashStart=this.value;renderApp()" style="font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px">';
+    h+='<span style="font-size:12px">至</span>';
+    h+='<input type="date" value="'+STATE.dashEnd+'" onchange="STATE.dashEnd=this.value;renderApp()" style="font-size:13px;padding:3px 6px;border:1px solid var(--border);border-radius:4px">';
+  }
+  h+='<button class="btn btn-xs" onclick="STATE.dashRange=\'custom\';STATE.dashStart=tsOffset(-7);STATE.dashEnd=ts();renderApp()">自定义</button>';
+  h+='</div>';
+
+  // KPIs
+  h+='<div class="kpi-row">';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--primary)">'+s.total+'</div><div class="kpi-label">总问题数</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--warn)">'+(s.open+s.inProg)+'</div><div class="kpi-label">处理中</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--success)">'+s.done+'</div><div class="kpi-label">已完结</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--danger)">'+s.overdue+'</div><div class="kpi-label">已逾期</div></div>';
+  h+='</div>';
+
+  // Charts
+  h+='<div class="chart-row">';
+  h+='<div class="chart-box"><div class="chart-ttl">问题状态分布</div>'+svgPie(pie)+'</div>';
+  h+='<div class="chart-box"><div class="chart-ttl">优先级分布</div>'+svgBar(bar)+'</div>';
+  h+='</div>';
+
+  // Import info
+  if(STATE.user.role==='admin'&&Object.keys(STATE.importedData).length>0){
+    h+='<div style="font-size:12px;color:var(--text2);margin-top:8px">';
+    h+='已导入 '+Object.keys(STATE.importedData).length+' 位成员数据，以上统计含导入数据';
+    h+='</div>';
+  }
+
+  return h;
+}
+
+// ====== 问题排查 ======
+function renderIssues(){
+  var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 问题排查台</div>';
+
+  // Voice card - prominent
+  h+='<div class="card" style="border:2px dashed #fca5a5;background:var(--danger2);margin-bottom:12px">';
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">';
+  h+='<div style="flex:1;min-width:0">';
+  h+='<div style="font-weight:700;font-size:14px;margin-bottom:2px"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:3px">'+I.mic+'</span>语音录入</div>';
+  h+='<div style="font-size:12px;color:var(--text2)">说出门店信息和问题，自动识别填入表单</div>';
+  h+='</div>';
+  h+='<button class="btn btn-voice" id="voice-btn" onclick="startVoice()" style="font-size:15px;padding:10px 18px"><span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音</button>';
+  h+='</div>';
+  // Voice preview
+  h+='<div class="voice-preview'+(STATE.voiceText?' show':'')+'" id="voice-preview" style="margin-top:8px">';
+  h+='<strong>识别结果：</strong><span id="voice-text">'+esc(STATE.voiceText)+'</span>';
+  h+='<button class="btn btn-xs" style="margin-left:8px" onclick="STATE.voiceText=\'\';STATE.voiceParsed={shop:\'\',desc:\'\',pri:\'P2\',deadline:\'\'};renderApp()">清除</button>';
+  h+='</div>';
+  h+='</div>';
+
+  // Add form
+  h+='<div class="card">';
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
+  h+='<span style="font-weight:700;font-size:14px">'+(STATE.editingIssueId?'编辑问题':'新增问题')+'</span>';
+  if(STATE.editingIssueId) h+='<button class="btn btn-xs" onclick="STATE.editingIssueId=null;renderApp()">取消编辑</button>';
+  h+='</div>';
+  // 确定表单初始值：编辑模式用已有数据，新增模式用语音解析或默认值
+  var vp = STATE.voiceParsed || {shop:'', desc:'', pri:'P2', deadline:''};
+  var formShop = STATE.editingIssueId ? findIssue(STATE.editingIssueId).shopName : vp.shop;
+  var formDesc = STATE.editingIssueId ? findIssue(STATE.editingIssueId).shopDesc : vp.desc;
+  var formPri  = STATE.editingIssueId ? findIssue(STATE.editingIssueId).priority : vp.pri;
+  var formDl   = STATE.editingIssueId ? findIssue(STATE.editingIssueId).deadline : (vp.deadline||tsOffset(7));
+  h+='<div class="form-group"><label>门店名称</label><input id="iss-shop" placeholder="如：华东区-杭州西湖店" value="'+esc(formShop)+'"></div>';
+  h+='<div class="form-group"><label>门店描述</label><textarea id="iss-desc" placeholder="描述遇到的问题">'+esc(formDesc)+'</textarea></div>';
+  h+='<div class="form-row3">';
+  h+='<div class="form-group"><label>优先级</label><select id="iss-pri">'+
+    '<option value="P0"'+((formPri==='P0')?' selected':'')+'>P0 紧急</option>'+
+    '<option value="P1"'+((formPri==='P1')?' selected':'')+'>P1 重要</option>'+
+    '<option value="P2"'+((formPri==='P2')?' selected':'')+'>P2 普通</option></select></div>';
+  h+='<div class="form-group"><label>截止日期</label><input type="date" id="iss-deadline" value="'+formDl+'"></div>';
+  h+='<div class="form-group"><label>推进进度</label><select id="iss-progress">'+
+    '<option value="未开始">未开始</option><option value="跟进中">跟进中</option>'+
+    '<option value="阶段性完成">阶段性完成</option><option value="已完结">已完结</option></select></div>';
+  h+='</div>';
+  h+='<button class="btn btn-primary btn-sm" onclick="'+(STATE.editingIssueId?'updateIssue()':'addIssue()')+'">'+
+    (STATE.editingIssueId?'保存修改':'添加问题')+'</button>';
+  h+='</div>';
+
+  // List
+  var issues = STATE.data.issues.slice();
+  issues.sort(function(a,b){
+    var po={'P0':0,'P1':1,'P2':2};
+    var pa=po[a.priority]||2,pb=po[b.priority]||2;
+    if(pa!==pb) return pa-pb;
+    return (a.deadline||'').localeCompare(b.deadline||'');
+  });
+
+  if(issues.length===0){
+    h+='<div class="empty">暂无问题记录，使用上方表单添加，或试试语音录入</div>';
+  } else {
+    for(var i=0;i<issues.length;i++){
+      var iss=issues[i];
+      var isOverdue=false;
+      if(iss.deadline&&iss.progress!=='已完结'){
+        var dl=new Date(iss.deadline);dl.setHours(0,0,0,0);
+        var now=new Date();now.setHours(0,0,0,0);
+        if(dl<now) isOverdue=true;
+      }
+      var progCls='badge-progress';
+      if(iss.progress==='已完结') progCls='badge-completed';
+      else if(iss.progress==='未开始') progCls='badge-p2';
+      h+='<div class="issue-card'+(isOverdue?' overdue':'')+'">';
+      h+='<div class="ic-top">';
+      h+='<span class="ic-store">'+esc(iss.shopName||'未知门店')+'</span>';
+      h+='<div style="display:flex;gap:4px;flex-shrink:0">';
+      h+='<span class="badge badge-'+iss.priority.toLowerCase()+'">'+esc(iss.priority||'P2')+'</span>';
+      h+='<span class="badge '+progCls+'">'+esc(iss.progress||'未开始')+'</span>';
+      h+='</div></div>';
+      h+='<div class="ic-desc">'+esc(iss.shopDesc||'')+'</div>';
+      h+='<div class="ic-meta">';
+      h+='<span>截止：'+esc(iss.deadline||'未设置')+'</span>';
+      h+='<span>创建：'+esc(iss.createdAt||'')+'</span>';
+      if(iss._sample) h+='<span style="color:var(--warn)">示例</span>';
+      if(isOverdue) h+='<span style="color:var(--danger);font-weight:600">已逾期!</span>';
+      h+='</div>';
+      h+='<div class="ic-actions">';
+      h+='<select style="font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:4px" onchange="changeProgress(\''+iss.id+'\',this.value)">'+
+        '<option value="未开始"'+(iss.progress==='未开始'?' selected':'')+'>未开始</option>'+
+        '<option value="跟进中"'+(iss.progress==='跟进中'?' selected':'')+'>跟进中</option>'+
+        '<option value="阶段性完成"'+(iss.progress==='阶段性完成'?' selected':'')+'>阶段性完成</option>'+
+        '<option value="已完结"'+(iss.progress==='已完结'?' selected':'')+'>已完结</option></select>';
+      h+='<button class="btn btn-xs" onclick="editIssue(\''+iss.id+'\')">'+I.edit+' 编辑</button>';
+      h+='<button class="btn btn-xs btn-outline-danger" onclick="deleteIssue(\''+iss.id+'\')">'+I.trash+'</button>';
+      h+='</div></div>';
+    }
+  }
+
+  return h;
+}
+
+function findIssue(id){
+  for(var i=0;i<STATE.data.issues.length;i++){if(STATE.data.issues[i].id===id) return STATE.data.issues[i]}
+  return {};
+}
+function addIssue(){
+  var shop=document.getElementById('iss-shop').value.trim();
+  var desc=document.getElementById('iss-desc').value.trim();
+  var pri=document.getElementById('iss-pri').value;
+  var dl=document.getElementById('iss-deadline').value;
+  var prog=document.getElementById('iss-progress').value;
+  if(!shop){T('请填写门店名称');return}
+  var issue={id:gid(),shopName:shop,shopDesc:desc,priority:pri,deadline:dl,progress:prog,createdAt:ts()};
+  STATE.voiceParsed = {shop:'', desc:'', pri:'P2', deadline:''};
+  STATE.voiceText = '';
+  STATE.data.issues.unshift(issue);
+  // 已完结 → 自动归档
+  if(prog==='已完结') archiveIssue(issue);
+  saveUserData();
+  T('问题已添加');
+  renderApp();
+}
+function updateIssue(){
+  var id=STATE.editingIssueId;
+  if(!id) return;
+  var iss=findIssue(id);
+  var wasDone=iss.progress==='已完结';
+  iss.shopName=document.getElementById('iss-shop').value.trim();
+  iss.shopDesc=document.getElementById('iss-desc').value.trim();
+  iss.priority=document.getElementById('iss-pri').value;
+  iss.deadline=document.getElementById('iss-deadline').value;
+  iss.progress=document.getElementById('iss-progress').value;
+  if(!wasDone&&iss.progress==='已完结') archiveIssue(iss);
+  STATE.editingIssueId=null;
+  saveUserData();
+  T('已保存');
+  renderApp();
+}
+function editIssue(id){
+  STATE.editingIssueId=id;
+  renderApp();
+  window.scrollTo({top:document.getElementById('pane-issues').offsetTop-60,behavior:'smooth'});
+}
+function changeProgress(id, prog){
+  var iss=findIssue(id);
+  var wasDone=iss.progress==='已完结';
+  iss.progress=prog;
+  if(!wasDone&&prog==='已完结') archiveIssue(iss);
+  saveUserData();
+  T('进度已更新');
+  renderApp();
+}
+function deleteIssue(id){
+  if(!confirm('确定删除此问题？')) return;
+  STATE.data.issues=STATE.data.issues.filter(function(i){return i.id!==id});
+  saveUserData();
+  T('已删除');
+  renderApp();
+}
+function archiveIssue(issue){
+  STATE.data.archives.unshift({
+    id:gid(),shopName:issue.shopName,shopDesc:issue.shopDesc,
+    priority:issue.priority,completedAt:ts(),createdAt:issue.createdAt||''
+  });
+  T(issue.shopName+' 已归档');
+}
+
+// ====== 语音录入 ======
+var recognition=null;
+var isRecognizing=false;
+function startVoice(){
+  // 浏览器兼容性检查
+  var hasSR = ('webkitSpeechRecognition' in window) || ('SpeechRecognition' in window);
+  if(!hasSR){
+    T('当前浏览器不支持语音识别。请使用 Chrome/Edge 浏览器打开此页面，或手动填写表单');
+    return;
+  }
+
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  // 如果已在录音，先停止
+  if(isRecognizing && recognition){
+    try{ recognition.abort(); }catch(e){}
+    isRecognizing = false;
+    var btn = document.getElementById('voice-btn');
+    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
+    return;
+  }
+
+  // 创建或重建 recognition 实例（避免状态异常）
+  try{ if(recognition) recognition.abort(); }catch(e){}
+  recognition = new SR();
+  recognition.lang = 'zh-CN';
+  recognition.interimResults = false;
+  recognition.maxAlternatives = 1;
+  recognition.continuous = false;
+
+  recognition.onstart = function(){
+    isRecognizing = true;
+    var btn = document.getElementById('voice-btn');
+    if(btn){ btn.classList.add('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>正在聆听...点击停止'; }
+    T('正在聆听，请说出门店信息和问题...');
+  };
+
+  recognition.onresult = function(e){
+    isRecognizing = false;
+    var text = '';
+    for(var i=0; i<e.results.length; i++){
+      text += e.results[i][0].transcript;
+    }
+    if(text){
+      STATE.voiceText = text;
+      parseVoice(text);
+    }
+    var btn = document.getElementById('voice-btn');
+    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
+    renderApp();
+  };
+
+  recognition.onerror = function(e){
+    isRecognizing = false;
+    var btn = document.getElementById('voice-btn');
+    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
+    var msg = '语音识别出错';
+    if(e.error === 'not-allowed') msg = '麦克风权限被拒绝，请在浏览器设置中允许麦克风访问';
+    else if(e.error === 'no-speech') msg = '未检测到语音，请靠近麦克风再试一次';
+    else if(e.error === 'network') msg = '网络连接异常，语音识别需要联网';
+    else if(e.error === 'aborted') return; // 用户手动停止，不提示
+    else msg = '语音识别失败：' + e.error;
+    T(msg);
+  };
+
+  recognition.onend = function(){
+    isRecognizing = false;
+    var btn = document.getElementById('voice-btn');
+    if(btn){ btn.classList.remove('recording'); btn.innerHTML = '<span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.mic+'</span>开始录音'; }
+  };
+
+  // 开始识别
+  try{
+    recognition.start();
+  }catch(e){
+    T('启动语音识别失败，请刷新页面后重试');
+    isRecognizing = false;
+  }
+}
+function parseVoice(text){
+  // 智能解析：门店名 描述 优先级 日期
+  var shop='',desc=text,pri='P2',deadline='';
+  // 提取优先级
+  if(/[Pp]0|紧急/.test(text)) pri='P0';
+  else if(/[Pp]1|重要/.test(text)) pri='P1';
+  // 提取日期
+  var dateMatch=text.match(/(\d{1,2})月(\d{1,2})[日号]?/);
+  if(dateMatch){
+    var m=S(parseInt(dateMatch[1])),d=S(parseInt(dateMatch[2]));
+    var y=new Date().getFullYear();
+    deadline=y+'-'+m+'-'+d;
+  }
+  // 尝试提取门店名（第一段或"门店"关键词附近）
+  var shopMatch=text.match(/^(.+?店)/);
+  if(shopMatch) shop=shopMatch[1];
+  if(shop) desc=text.replace(shop,'').replace(/^\s*[，,]\s*/,'');
+
+  // 存入 STATE 而非直接操作 DOM（因为 renderApp 会重建 DOM）
+  STATE.voiceParsed = {shop:shop, desc:desc, pri:pri, deadline:deadline};
+  T('已解析语音内容并填入表单，请核对后添加');
+}
+
+// ====== 日报快照 ======
+function renderDaily(){
+  var today=ts();
+  var h='<div class="daily-hdr">';
+  h+='<div class="daily-date"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.clipboard+'</span> '+today+' 日报</div>';
+  h+='<div><input type="date" id="daily-pick" value="'+today+'" onchange="renderApp()" style="font-size:14px;padding:5px 10px;border:1px solid var(--border);border-radius:4px"></div>';
+  h+='</div>';
+
+  var date=document.getElementById('daily-pick')?document.getElementById('daily-pick').value:today;
+  var archs=STATE.data.archives.filter(function(a){return a.completedAt===date});
+  var supp=STATE.data.dailySupps[date]||'';
+
+  if(archs.length===0&&!supp){
+    h+='<div class="empty">当日暂无完结记录</div>';
+  } else {
+    h+='<div class="daily-summary">';
+    h+='<strong>今日完结 '+archs.length+' 项</strong>';
+    for(var i=0;i<archs.length;i++){
+      h+='<div class="daily-item"><span class="badge badge-'+archs[i].priority.toLowerCase()+'">'+esc(archs[i].priority)+'</span>'+
+        esc(archs[i].shopName)+' - '+esc(archs[i].shopDesc||'')+'</div>';
+    }
+    h+='</div>';
+  }
+
+  h+='<div class="card"><div class="card-ttl">手动备注</div>';
+  h+='<div class="form-group"><textarea id="daily-supp" placeholder="补充今日总结、待跟进事项...">'+esc(supp)+'</textarea></div>';
+  h+='<button class="btn btn-sm btn-primary" onclick="saveDailySupp()">保存备注</button></div>';
+  return h;
+}
+function saveDailySupp(){
+  var date=document.getElementById('daily-pick')?document.getElementById('daily-pick').value:ts();
+  var text=document.getElementById('daily-supp').value;
+  STATE.data.dailySupps[date]=text;
+  saveUserData();
+  T('备注已保存');
+}
+
+// ====== 知识速查 ======
+function renderKnowledge(){
+  var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.book+'</span> 知识库速查</div>';
+  h+='<div class="search-box">'+I.search+
+    '<input type="text" placeholder="搜索业务规则、编码、知识域..." id="kw-search" oninput="renderApp()"></div>';
+
+  // Add form
+  h+='<div class="card" style="border-style:dashed">';
+  h+='<div style="font-weight:700;font-size:13px;margin-bottom:8px">新增知识沉淀</div>';
+  h+='<div class="form-row"><div class="form-group"><label>知识域</label><input id="kw-domain" placeholder="如：财务与分账"></div>';
+  h+='<div class="form-group"><label>编码</label><input id="kw-code" placeholder="如：B107-B119"></div></div>';
+  h+='<div class="form-group"><label>标题</label><input id="kw-title" placeholder="规则标题"></div>';
+  h+='<div class="form-group"><label>内容</label><textarea id="kw-content" placeholder="详细规则描述"></textarea></div>';
+  h+='<button class="btn btn-sm btn-primary" onclick="addKnowledge()">'+I.plus+' 添加到知识库</button>';
+  h+='</div>';
+
+  // List
+  var query=(document.getElementById('kw-search')?document.getElementById('kw-search').value:'').trim().toLowerCase();
+  var list=STATE.data.knowledge.slice();
+  if(query){
+    list=list.filter(function(k){
+      return (k.domain||'').toLowerCase().indexOf(query)>=0||
+        (k.code||'').toLowerCase().indexOf(query)>=0||
+        (k.title||'').toLowerCase().indexOf(query)>=0||
+        (k.content||'').toLowerCase().indexOf(query)>=0;
+    });
+  }
+  h+='<div style="font-size:13px;color:var(--text3);margin-bottom:8px">共 '+list.length+' 条'+(query?'（搜索：'+esc(query)+'）':'')+'</div>';
+  if(list.length===0){
+    h+='<div class="empty">'+(query?'无匹配结果':'暂无知识沉淀')+'</div>';
+  } else {
+    for(var i=0;i<list.length;i++){
+      var k=list[i];
+      h+='<div class="know-card">';
+      h+='<div class="kc-domain">'+esc(k.domain||'')+' <span class="kc-code">'+esc(k.code||'')+'</span></div>';
+      h+='<div class="kc-title">'+esc(k.title||'')+'</div>';
+      h+='<div class="kc-content">'+esc(k.content||'')+'</div>';
+      h+='<div style="margin-top:8px"><button class="btn btn-xs btn-outline-danger" onclick="deleteKnowledge(\''+k.id+'\')">删除</button></div>';
+      h+='</div>';
+    }
+  }
+  return h;
+}
+function addKnowledge(){
+  var dom=document.getElementById('kw-domain').value.trim();
+  var code=document.getElementById('kw-code').value.trim();
+  var title=document.getElementById('kw-title').value.trim();
+  var content=document.getElementById('kw-content').value.trim();
+  if(!title){T('请填写标题');return}
+  STATE.data.knowledge.unshift({id:gid(),domain:dom,code:code,title:title,content:content});
+  saveUserData();
+  T('已添加到知识库');
+  renderApp();
+}
+function deleteKnowledge(id){
+  if(!confirm('确定删除此知识项？')) return;
+  STATE.data.knowledge=STATE.data.knowledge.filter(function(k){return k.id!==id});
+  saveUserData();
+  T('已删除');
+  renderApp();
+}
+
+// ====== 团队管理（管理员专属）=======
+function renderTeam(){
+  var passcodes=loadPasscodes();
+  var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.users+'</span> 团队管理</div>';
+  h+='<div class="import-section">';
+  h+='<div class="is-title">团队数据已自动汇总</div>';
+  h+='<div class="is-desc">成员保存的业务数据会实时写入 Supabase 云端。管理员驾驶舱已自动汇总 '+Object.keys(STATE.importedData).length+' 位其他成员的数据，不再需要收集和导入 JSON 文件。</div>';
+  h+='</div>';
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
+  h+='<span style="font-weight:700;font-size:14px">成员管理（'+passcodes.length+' 人）</span>';
+  h+='<button class="btn btn-sm btn-primary" onclick="showAddPasscode()">'+I.plus+' 新增成员说明</button>';
+  h+='</div>';
+
+  if(passcodes.length===0){
+    h+='<div class="empty">暂无成员</div>';
+  } else {
+    for(var i=0;i<passcodes.length;i++){
+      var p=passcodes[i];
+      var isSelf=p.userId===STATE.user.userId;
+      h+='<div class="pwd-card">';
+      h+='<div class="pw-info">';
+      h+='<div class="pw-name">'+esc(p.name||'')+(isSelf?' <span style="font-size:10px;color:var(--text3)">(我)</span>':'')+'</div>';
+      h+='<div class="pw-meta">'+esc(p.department||'')+' · 用户名: <span class="pw-code">'+esc(p.username||'')+'</span> · '+
+        (p.role==='admin'?'管理员':'成员')+' · 注册于 '+esc(p.createdAt||'')+'</div>';
+      h+='</div>';
+      h+='<div class="pw-actions">';
+      h+='<button class="btn btn-xs" onclick="editPasscode(\''+p.userId+'\')">'+I.edit+'</button>';
+      h+='</div></div>';
+    }
+  }
+  return h;
+}
+
+function handleImportFile(input){
+  var name=document.getElementById('imp-name').value.trim();
+  var dept=document.getElementById('imp-dept').value.trim();
+  if(!name){T('请填写成员姓名');input.value='';return}
+  var file=input.files[0];
+  if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    importMemberData(name, dept, e.target.result);
+    renderApp();
+  };
+  reader.readAsText(file);
+  input.value='';
+}
+
+// ====== 数据导入导出 ======
+function exportData(){
+  var exp={issues:STATE.data.issues,knowledge:STATE.data.knowledge,archives:STATE.data.archives,dailySupps:STATE.data.dailySupps,user:STATE.user?{name:STATE.user.name,department:STATE.user.department,role:STATE.user.role}:null,exportedAt:ts()};
+  var json=JSON.stringify(exp,null,2);
+  var blob=new Blob([json],{type:'application/json'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='商云宝备份_'+ts()+'.json';
+  a.click();
+  T('导出成功');
+}
+function importData(input){
+  var file=input.files[0];
+  if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var d=JSON.parse(e.target.result);
+      if(!d.issues){T('无效的备份文件格式');return}
+      if(!confirm('将用备份数据覆盖当前数据（共'+d.issues.length+'条问题、'+(d.knowledge?d.knowledge.length:0)+'条知识），确定继续？')){input.value='';return}
+      STATE.data.issues=d.issues||[];
+      STATE.data.knowledge=d.knowledge||[];
+      STATE.data.archives=d.archives||[];
+      STATE.data.dailySupps=d.dailySupps||{};
+      saveUserData();
+      T('数据已恢复');
+      renderApp();
+    }catch(err){T('JSON解析失败，请检查文件')}
+  };
+  reader.readAsText(file);
+  input.value='';
+}
+function confirmClear(){
+  if(!confirm('⚠️ 将清空所有数据（问题、知识库、归档、备注）\n此操作不可恢复！\n\n确定继续？')) return;
+  if(!confirm('再次确认：清空所有数据？')) return;
+  STATE.data={issues:[],knowledge:[],archives:[],dailySupps:{}};
+  saveUserData();
+  T('所有数据已清空');
+  renderApp();
+}
+
+// ====== 初始化 ======
+(async function init(){
+  if(!db){
+    showLogin('云端配置缺失，请联系管理员');
+    return;
+  }
+  try{
+    var sessionResult=await db.auth.getSession();
+    if(sessionResult.error) throw sessionResult.error;
+    if(sessionResult.data.session&&sessionResult.data.session.user){
+      await startUserSession(sessionResult.data.session.user);
+      return;
+    }
+  }catch(error){
+    console.error('[商云宝] 云端初始化失败',error);
+    showLogin('云端连接失败，请刷新页面重试');
+    return;
+  }
+  showLogin();
+})();
+</script>
+</body>
+</html>

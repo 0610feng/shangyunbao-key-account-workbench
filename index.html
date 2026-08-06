@@ -239,6 +239,7 @@ var STATE = {
   data: {issues:[], knowledge:[], archives:[], dailySupps:{}},
   importedData: {}, // {userId: {issues, archives, ...}} 管理员导入的成员数据
   dashRange: 'today',
+  dashScope: 'team',
   dashStart: '',
   dashEnd: '',
   dailyDate: '',
@@ -269,6 +270,8 @@ var pendingSaves = 0;
 var latestSaveRequest = 0;
 var realtimeChannel = null;
 var realtimeRefreshTimer = null;
+var realtimeDeferCount = 0;
+var refreshQueued = false;
 var syncPollTimer = null;
 var focusRefreshTimer = null;
 var isRefreshingCloud = false;
@@ -369,16 +372,20 @@ function hasActiveFormInput(){
 function scheduleRealtimeRefresh(){
   clearTimeout(realtimeRefreshTimer);
   realtimeRefreshTimer=setTimeout(function(){
-    if(hasActiveFormInput()){
+    // 正在输入时短暂延后，最多约 1.5 秒，避免一直聚焦导致永远不同步。
+    if(hasActiveFormInput()&&realtimeDeferCount<4){
+      realtimeDeferCount++;
       scheduleRealtimeRefresh();
       return;
     }
+    realtimeDeferCount=0;
     refreshFromCloud({source:'realtime'});
   },350);
 }
 async function refreshFromCloud(options){
   options=options||{};
-  if(!db||!STATE.user||isRefreshingCloud) return false;
+  if(!db||!STATE.user) return false;
+  if(isRefreshingCloud){refreshQueued=true;return false}
   if(pendingSaves>0) await saveQueue.catch(function(){});
   if(!STATE.user) return false;
   isRefreshingCloud=true;
@@ -401,6 +408,10 @@ async function refreshFromCloud(options){
     return false;
   }finally{
     isRefreshingCloud=false;
+    if(refreshQueued){
+      refreshQueued=false;
+      scheduleRealtimeRefresh();
+    }
   }
 }
 async function manualCloudRefresh(){
@@ -411,6 +422,8 @@ function stopRealtimeSync(){
   clearTimeout(realtimeRefreshTimer);
   clearInterval(syncPollTimer);
   realtimeRefreshTimer=null;
+  realtimeDeferCount=0;
+  refreshQueued=false;
   syncPollTimer=null;
   if(realtimeChannel&&db){db.removeChannel(realtimeChannel)}
   realtimeChannel=null;
@@ -494,7 +507,8 @@ function getMergedArchives(){
 
 // ====== 驾驶舱数据 ======
 function getDashIssues(){
-  var all = getMergedIssues();
+  var useTeam = STATE.user&&STATE.user.role==='admin'&&STATE.dashScope==='team';
+  var all = useTeam ? getMergedIssues() : STATE.data.issues.slice();
   return filterByDate(all);
 }
 function filterByDate(arr){
@@ -621,16 +635,8 @@ function getSampleData(){
 }
 
 async function initSampleData(){
-  // 检查是否存在任何用户数据（不仅仅 issues + knowledge）
-  var hasData = STATE.data.issues.length > 0 || STATE.data.knowledge.length > 0 
-    || STATE.data.archives.length > 0 || Object.keys(STATE.data.dailySupps||{}).length > 0;
-  if(!hasData){
-    console.log('[商云宝] 无用户数据，插入示例');
-    STATE.data = getSampleData();
-    await saveUserData();
-  } else {
-    console.log('[商云宝] 已有用户数据，跳过示例');
-  }
+  // 正式环境不再自动写入示例，确保用户清空后重新登录仍保持为空。
+  return false;
 }
 async function clearSampleData(){
   STATE.data.issues = STATE.data.issues.filter(function(i){return !i._sample});
@@ -712,7 +718,6 @@ async function startUserSession(authUser){
   STATE.user=profileToUser(profileResult.data);
   await loadUserData();
   await loadImportedData();
-  await initSampleData();
   renderApp();
   startRealtimeSync();
 }
@@ -891,7 +896,7 @@ function renderApp(){
   h+='<button class="btn btn-sm" onclick="exportData()">'+I.download+' 导出备份</button>';
   h+='<button class="btn btn-sm" onclick="manualCloudRefresh()">'+I.refresh+' 刷新云端</button>';
   h+='<button class="btn btn-sm" onclick="document.getElementById(\'import-file\').click()">'+I.upload+' 导入恢复</button>';
-  h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' 清空数据</button>';
+  h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' '+(isAdmin?'清空我的数据':'清空数据')+'</button>';
   if(STATE.data.issues.some(function(i){return i._sample})||STATE.data.knowledge.some(function(k){return k._sample})){
     h+='<button class="btn btn-sm" onclick="clearSampleData()">'+I.refresh+' 清空示例</button>';
   }
@@ -902,7 +907,7 @@ function renderApp(){
   var realIssues = STATE.data.issues.filter(function(i){return !i._sample}).length;
   var realKnow = STATE.data.knowledge.filter(function(k){return !k._sample}).length;
   h+='<div id="data-status" style="text-align:center;font-size:11px;color:var(--text3);padding:4px 0 10px;border-top:1px solid var(--border2);margin:0 16px">';
-  h+='云端存储：<span id="cloud-state" style="color:'+cloudState.color+';font-weight:600">'+esc(cloudState.text)+'</span> · <span style="color:var(--success);font-weight:600">'+realIssues+'</span> 条问题 · <span style="color:var(--success);font-weight:600">'+realKnow+'</span> 条知识 · <span style="color:var(--success);font-weight:600">'+STATE.data.archives.length+'</span> 条归档';
+  h+=(isAdmin?'我的云端存储：':'云端存储：')+'<span id="cloud-state" style="color:'+cloudState.color+';font-weight:600">'+esc(cloudState.text)+'</span> · <span style="color:var(--success);font-weight:600">'+realIssues+'</span> 条问题 · <span style="color:var(--success);font-weight:600">'+realKnow+'</span> 条知识 · <span style="color:var(--success);font-weight:600">'+STATE.data.archives.length+'</span> 条归档';
   h+='</div>';
 
   document.getElementById('app').innerHTML = h;
@@ -931,9 +936,10 @@ function renderTodayBar(){
   for(var i=0;i<Math.min(items.length,5);i++){
     var it=items[i];
     var cls=it.type==='overdue'?' overdue':'';
+    var ownerPrefix=it.issue._fromMember?'['+it.issue._fromMember+'] ':'';
     h+='<div class="ti-row'+cls+'">';
     h+='<span class="ti-pri '+it.issue.priority+'">'+esc(it.issue.priority||'P2')+'</span>';
-    h+='<span class="ti-text">'+esc(it.issue.shopName||'未知门店')+' - '+esc((it.issue.shopDesc||'').slice(0,24))+'</span>';
+    h+='<span class="ti-text">'+esc(ownerPrefix+(it.issue.shopName||'未知门店'))+' - '+esc((it.issue.shopDesc||'').slice(0,24))+'</span>';
     if(it.type==='overdue') h+='<span style="font-size:11px;color:#ef4444;flex-shrink:0">逾期</span>';
     h+='<button class="btn btn-xs btn-primary" onclick="switchTab(\'issues\')">处理</button>';
     h+='</div>';
@@ -947,6 +953,15 @@ function renderDashboard(){
   var s=dashStats();
   var pie=dashPieData(),bar=dashBarData();
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.dashboard+'</span> 驾驶舱概览</div>';
+
+  // 管理员可明确选择统计本人或全团队，避免与“我的问题排查”混淆。
+  if(STATE.user.role==='admin'){
+    h+='<div class="date-filter" style="margin-bottom:8px">';
+    h+='<span style="font-size:12px;color:var(--text3);margin-right:4px">统计范围</span>';
+    h+='<button class="btn btn-xs'+(STATE.dashScope==='team'?' btn-primary':'')+'" onclick="STATE.dashScope=\'team\';renderApp()">全团队</button>';
+    h+='<button class="btn btn-xs'+(STATE.dashScope==='mine'?' btn-primary':'')+'" onclick="STATE.dashScope=\'mine\';renderApp()">仅看我</button>';
+    h+='</div>';
+  }
 
   // Date filter
   h+='<div class="date-filter">';
@@ -964,9 +979,10 @@ function renderDashboard(){
   h+='</div>';
 
   // KPIs
+  var totalLabel=STATE.user.role==='admin'&&STATE.dashScope==='team'?'团队总问题':'我的问题';
   h+='<div class="kpi-row">';
-  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--primary)">'+s.total+'</div><div class="kpi-label">总问题数</div></div>';
-  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--warn)">'+(s.open+s.inProg)+'</div><div class="kpi-label">处理中</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--primary)">'+s.total+'</div><div class="kpi-label">'+totalLabel+'</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--warn)">'+(s.open+s.inProg)+'</div><div class="kpi-label">待处理</div></div>';
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--success)">'+s.done+'</div><div class="kpi-label">已完结</div></div>';
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--danger)">'+s.overdue+'</div><div class="kpi-label">已逾期</div></div>';
   h+='</div>';
@@ -977,10 +993,16 @@ function renderDashboard(){
   h+='<div class="chart-box"><div class="chart-ttl">优先级分布</div>'+svgBar(bar)+'</div>';
   h+='</div>';
 
-  // Import info
-  if(STATE.user.role==='admin'&&Object.keys(STATE.importedData).length>0){
-    h+='<div style="font-size:12px;color:var(--text2);margin-top:8px">';
-    h+='已导入 '+Object.keys(STATE.importedData).length+' 位成员数据，以上统计含导入数据';
+  // 统计口径说明
+  if(STATE.user.role==='admin'){
+    var memberIssueCount=getMergedIssues().filter(function(item){return !!item._fromMember}).length;
+    h+='<div style="font-size:12px;color:var(--text2);margin-top:8px;padding:8px 10px;background:var(--primary-lighter);border-radius:6px">';
+    if(STATE.dashScope==='team'){
+      h+='当前为全团队统计：我的 '+STATE.data.issues.length+' 条 + 其他成员 '+memberIssueCount+' 条。';
+    }else{
+      h+='当前仅统计我的数据，不包含其他成员的 '+memberIssueCount+' 条问题。';
+    }
+    h+='“清空我的数据”不会删除其他成员数据。';
     h+='</div>';
   }
 
@@ -1046,9 +1068,10 @@ function renderIssues(){
     if(pa!==pb) return pa-pb;
     return (a.deadline||'').localeCompare(b.deadline||'');
   });
+  h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的问题（'+issues.length+'）</div>';
 
   if(issues.length===0){
-    h+='<div class="empty">暂无问题记录，使用上方表单添加，或试试语音录入</div>';
+    h+='<div class="empty">我的问题已清空。管理员驾驶舱中的其他问题可能来自团队成员。</div>';
   } else {
     for(var i=0;i<issues.length;i++){
       var iss=issues[i];
@@ -1084,6 +1107,28 @@ function renderIssues(){
       h+='<button class="btn btn-xs" onclick="editIssue(\''+iss.id+'\')">'+I.edit+' 编辑</button>';
       h+='<button class="btn btn-xs btn-outline-danger" onclick="deleteIssue(\''+iss.id+'\')">'+I.trash+'</button>';
       h+='</div></div>';
+    }
+  }
+
+  // 管理员只读查看团队成员问题，避免把成员数据误认为自己的数据。
+  if(STATE.user.role==='admin'){
+    var teamIssues=getMergedIssues().filter(function(item){return !!item._fromMember});
+    teamIssues.sort(function(a,b){return (a.deadline||'').localeCompare(b.deadline||'')});
+    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员问题（'+teamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">只读，需由成员本人修改</span></div>';
+    if(teamIssues.length===0){
+      h+='<div class="empty">当前没有团队成员问题</div>';
+    }else{
+      for(var ti=0;ti<teamIssues.length;ti++){
+        var teamIssue=teamIssues[ti];
+        var teamProgCls=teamIssue.progress==='已完结'?'badge-completed':(teamIssue.progress==='未开始'?'badge-p2':'badge-progress');
+        h+='<div class="issue-card" style="border-left:3px solid var(--primary)">';
+        h+='<div class="ic-top"><span class="ic-store">'+esc(teamIssue.shopName||'未知门店')+'</span><div style="display:flex;gap:4px;flex-shrink:0">';
+        h+='<span class="badge badge-'+(teamIssue.priority||'P2').toLowerCase()+'">'+esc(teamIssue.priority||'P2')+'</span>';
+        h+='<span class="badge '+teamProgCls+'">'+esc(teamIssue.progress||'未开始')+'</span></div></div>';
+        h+='<div class="ic-desc">'+esc(teamIssue.shopDesc||'')+'</div>';
+        h+='<div class="ic-meta"><span>成员：'+esc(teamIssue._fromMember||'')+'</span><span>部门：'+esc(teamIssue._fromDept||'未填写')+'</span><span>截止：'+esc(teamIssue.deadline||'未设置')+'</span></div>';
+        h+='</div>';
+      }
     }
   }
 
@@ -1441,12 +1486,14 @@ function importData(input){
   input.value='';
 }
 async function confirmClear(){
-  if(!confirm('⚠️ 将清空所有数据（问题、知识库、归档、备注）\n此操作不可恢复！\n\n确定继续？')) return;
-  if(!confirm('再次确认：清空所有数据？')) return;
+  var isAdmin=STATE.user&&STATE.user.role==='admin';
+  var scopeText=isAdmin?'仅清空当前管理员账号“'+STATE.user.name+'”的个人数据，不会删除其他成员数据。':'将清空当前账号的全部数据。';
+  if(!confirm('⚠️ '+scopeText+'\n包括问题、知识库、归档和备注，此操作不可恢复！\n\n确定继续？')) return;
+  if(!confirm('再次确认：'+(isAdmin?'清空我的数据（保留团队成员数据）？':'清空当前账号全部数据？'))) return;
   STATE.data={issues:[],knowledge:[],archives:[],dailySupps:{}};
   var saving=saveUserData();
   renderApp();
-  T((await saving)?'所有数据已清空并同步':'清空操作未同步，请重试');
+  T((await saving)?(isAdmin?'我的数据已清空；团队成员数据已保留':'当前账号数据已清空并同步'):'清空操作未同步，请重试');
 }
 
 // ====== 初始化 ======

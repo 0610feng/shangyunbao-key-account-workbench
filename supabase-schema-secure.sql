@@ -146,4 +146,25 @@ grant select on public.profiles to authenticated;
 grant select, insert, update, delete on public.workbench_data to authenticated;
 grant update (name, department, role, can_view_all) on public.profiles to authenticated;
 
+-- 让已打开的网页可以立即收到其他设备和团队成员的数据更新。
+alter table public.workbench_data replica identity full;
+alter table public.profiles replica identity full;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'workbench_data'
+  ) then
+    execute 'alter publication supabase_realtime add table public.workbench_data';
+  end if;
+
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'profiles'
+  ) then
+    execute 'alter publication supabase_realtime add table public.profiles';
+  end if;
+end $$;
+
 commit;

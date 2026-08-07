@@ -53,6 +53,7 @@ body{
 .user-name{font-size:13px;font-weight:600}
 .role-tag{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600}
 .role-tag.admin{background:var(--primary-light);color:var(--primary-dark)}
+.role-tag.viewer{background:#fef3c7;color:#92400e}
 .role-tag.member{background:var(--success2);color:var(--success)}
 .btn-logout{font-size:12px;color:var(--text3);cursor:pointer;padding:4px 8px;border-radius:4px;background:none;border:none}
 .btn-logout:hover{background:var(--border2);color:var(--danger)}
@@ -292,14 +293,17 @@ var I = {
 var STATE = {
   user: null,       // {userId, name, department, role:'admin'|'member', canViewAll}
   data: {issues:[], knowledge:[], archives:[], dailySupps:{}},
-  importedData: {}, // {userId: {issues, archives, ...}} 管理员导入的成员数据
+  importedData: {}, // {userId: {issues, archives, ...}} 拥有全数据查看权限时加载的团队数据
   dashRange: 'today',
   dashScope: 'team',
   dashStart: '',
   dashEnd: '',
   dailyDate: '',
+  knowledgeQuery: '',
   tab: 'dashboard',
   editingIssueId: null,
+  editingIssueOwnerUserId: null,
+  editingIssueBase: null,
   issueFormTouched: {},
   pendingNewIssue: null,
   issueDetail: null,
@@ -538,6 +542,25 @@ function profileToUser(p){
 function profileForUi(p){
   return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all,createdAt:(p.created_at||'').slice(0,10)};
 }
+function isAdmin(user){return !!user&&user.role==='admin'}
+function canViewTeamData(user){return !!user&&(isAdmin(user)||user.canViewAll===true)}
+function permissionTier(user){
+  if(isAdmin(user)) return 'admin';
+  return user&&user.canViewAll===true?'viewer':'member';
+}
+function permissionLabel(user){
+  var tier=permissionTier(user);
+  return tier==='admin'?'管理员':(tier==='viewer'?'全数据查看':'普通成员');
+}
+function permissionSettings(tier){
+  if(tier==='admin') return {role:'admin',canViewAll:true};
+  if(tier==='viewer') return {role:'member',canViewAll:true};
+  return {role:'member',canViewAll:false};
+}
+function permissionStateSignature(){
+  var user=STATE.user||{};
+  return dataSignature({name:user.name||'',department:user.department||'',tier:permissionTier(user),profiles:TEAM_PROFILES});
+}
 async function usernameToEmail(username){
   var normalized=username.trim().toLowerCase();
   var bytes=new TextEncoder().encode(normalized);
@@ -556,7 +579,7 @@ function initDefaultPasscodes(){return TEAM_PROFILES}
 function addPasscode(){T('请让成员在登录页自行注册');return null}
 function deletePasscode(){T('为保护历史数据，成员账号请在 Supabase 后台停用')}
 async function updatePasscode(userId,updates){
-  if(!db||!STATE.user||STATE.user.role!=='admin') return false;
+  if(!db||!isAdmin(STATE.user)) return false;
   var payload={name:updates.name,department:updates.department||'',role:updates.role||'member',can_view_all:!!updates.canViewAll};
   var result=await db.from('profiles').update(payload).eq('id',userId);
   if(result.error){T('成员信息保存失败：'+result.error.message);return false}
@@ -676,14 +699,17 @@ function captureIssueFormDraft(){
     shop:shop.value,desc:desc.value,pri:pri.value,deadline:deadline.value,progress:progress.value,
     transcript:transcript?transcript.value:STATE.voiceText,
     activeId:activeId,selectionStart:selectionStart,selectionEnd:selectionEnd,
-    editingIssueId:STATE.editingIssueId,touched:Object.assign({},STATE.issueFormTouched||{})
+    editingIssueId:STATE.editingIssueId,editingIssueOwnerUserId:STATE.editingIssueOwnerUserId,
+    touched:Object.assign({},STATE.issueFormTouched||{})
   };
 }
 function restoreIssueFormDraft(draft){
   if(!draft||STATE.tab!=='issues') return;
   var values={'iss-shop':draft.shop,'iss-desc':draft.desc,'iss-pri':draft.pri,'iss-deadline':draft.deadline,'iss-progress':draft.progress,'voice-transcript':draft.transcript};
   var fieldNames={'iss-shop':'shop','iss-desc':'desc','iss-pri':'pri','iss-deadline':'deadline','iss-progress':'progress'};
-  var sameEdit=draft.editingIssueId&&String(draft.editingIssueId)===String(STATE.editingIssueId||'');
+  var draftOwner=draft.editingIssueOwnerUserId||(STATE.user?STATE.user.userId:'');
+  var currentOwner=STATE.editingIssueOwnerUserId||(STATE.user?STATE.user.userId:'');
+  var sameEdit=draft.editingIssueId&&String(draft.editingIssueId)===String(STATE.editingIssueId||'')&&String(draftOwner)===String(currentOwner);
   Object.keys(values).forEach(function(id){
     var el=document.getElementById(id);if(!el)return;
     if(id==='voice-transcript'||!sameEdit||draft.touched&&draft.touched[fieldNames[id]])el.value=values[id]||'';
@@ -704,7 +730,18 @@ function markIssueFieldTouched(field){
   if(!STATE.issueFormTouched)STATE.issueFormTouched={};
   STATE.issueFormTouched[field]=true;
 }
-function cancelIssueEdit(){STATE.editingIssueId=null;STATE.issueFormTouched={};renderApp()}
+function clearIssueEditState(){
+  STATE.editingIssueId=null;
+  STATE.editingIssueOwnerUserId=null;
+  STATE.editingIssueBase=null;
+  STATE.issueFormTouched={};
+}
+function getEditingIssueRef(){
+  if(!STATE.editingIssueId)return null;
+  return findIssueRef(STATE.editingIssueOwnerUserId||(STATE.user?STATE.user.userId:''),STATE.editingIssueId);
+}
+function getEditingIssue(){var ref=getEditingIssueRef();return ref?ref.issue:{}}
+function cancelIssueEdit(){clearIssueEditState();renderApp()}
 function scheduleRealtimeRefresh(){
   clearTimeout(realtimeRefreshTimer);
   realtimeRefreshTimer=setTimeout(function(){
@@ -733,18 +770,18 @@ async function refreshFromCloud(options){
     if(!STATE.user)return false;
     var beforeOwn=dataSignature(STATE.data);
     var beforeTeam=dataSignature(STATE.importedData);
+    var beforePermissions=permissionStateSignature();
     var editedIssueDeleted=false;
     await loadImportedData();
     await loadUserData();
     // 网络读取期间用户可能仍在输入；在真正重绘前捕获最新 DOM 草稿。
     var issueDraft=captureIssueFormDraft();
-    if(STATE.editingIssueId&&!findIssue(STATE.editingIssueId).id){
+    if(STATE.editingIssueId&&!getEditingIssueRef()){
       editedIssueDeleted=true;
-      STATE.editingIssueId=null;
-      STATE.issueFormTouched={};
+      clearIssueEditState();
       STATE.pendingNewIssue=null;
     }
-    var changed=beforeOwn!==dataSignature(STATE.data)||beforeTeam!==dataSignature(STATE.importedData);
+    var changed=beforeOwn!==dataSignature(STATE.data)||beforeTeam!==dataSignature(STATE.importedData)||beforePermissions!==permissionStateSignature();
     if(changed){
       renderApp();
       restoreIssueFormDraft(issueDraft);
@@ -783,7 +820,7 @@ function startRealtimeSync(){
   stopRealtimeSync();
   if(!db||!STATE.user) return;
   var workbenchChange={event:'*',schema:'public',table:'workbench_data'};
-  if(STATE.user.role!=='admin') workbenchChange.filter='user_id=eq.'+STATE.user.userId;
+  if(!canViewTeamData(STATE.user)) workbenchChange.filter='user_id=eq.'+STATE.user.userId;
   realtimeChannel=db.channel('workbench-sync-'+STATE.user.userId+'-'+Date.now())
     .on('postgres_changes',workbenchChange,function(){scheduleRealtimeRefresh()})
     .on('postgres_changes',{event:'*',schema:'public',table:'profiles'},function(){scheduleRealtimeRefresh()})
@@ -797,13 +834,25 @@ function startRealtimeSync(){
 // ====== 团队云端数据 ======
 async function loadImportedData(){
   if(!db||!STATE.user){STATE.importedData={};TEAM_PROFILES=[];return}
-  var activeUserId=STATE.user.userId,activeRole=STATE.user.role;
+  var activeUserId=STATE.user.userId;
   var nextImported={},nextProfiles=[];
   var profilesResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,created_at').order('created_at',{ascending:true});
   if(profilesResult.error) throw profilesResult.error;
   nextProfiles=(profilesResult.data||[]).map(profileForUi);
-  if(activeRole!=='admin'){
+  var activeProfile=nextProfiles.find(function(item){return item.userId===activeUserId});
+  var permissionChanged=false;
+  if(activeProfile&&STATE.user&&STATE.user.userId===activeUserId){
+    var previousTier=permissionTier(STATE.user);
+    STATE.user.name=activeProfile.name;
+    STATE.user.department=activeProfile.department;
+    STATE.user.role=activeProfile.role;
+    STATE.user.canViewAll=activeProfile.canViewAll;
+    permissionChanged=previousTier!==permissionTier(STATE.user);
+  }
+  var activeCanViewTeam=canViewTeamData(STATE.user);
+  if(!activeCanViewTeam){
     if(STATE.user&&STATE.user.userId===activeUserId){TEAM_PROFILES=nextProfiles;STATE.importedData={}}
+    if(permissionChanged)setTimeout(startRealtimeSync,0);
     return;
   }
   var dataResult=await db.from('workbench_data').select('user_id,payload,updated_at');
@@ -815,6 +864,7 @@ async function loadImportedData(){
     nextImported[row.user_id]={name:p.name,department:p.department,data:normalizeUserData(row.payload),importedAt:(row.updated_at||'').slice(0,10)};
   });
   if(STATE.user&&STATE.user.userId===activeUserId){TEAM_PROFILES=nextProfiles;STATE.importedData=nextImported}
+  if(permissionChanged)setTimeout(startRealtimeSync,0);
 }
 function saveImportedData(){return}
 function importMemberData(name, department, jsonStr){
@@ -855,15 +905,44 @@ function getMergedArchives(){
   for(var uid in STATE.importedData){
     var imp = STATE.importedData[uid];
     if(imp.data&&imp.data.archives){
-      all = all.concat(imp.data.archives);
+      all = all.concat(imp.data.archives.map(function(archive){
+        var copy=cloneJson(archive);
+        copy._ownerUserId=uid;copy._fromMember=imp.name;copy._fromDept=imp.department;
+        return copy;
+      }));
     }
   }
   return all;
 }
+function getTeamKnowledgeEntries(){
+  var result=[];
+  for(var uid in STATE.importedData){
+    var imp=STATE.importedData[uid];
+    if(!imp.data||!Array.isArray(imp.data.knowledge))continue;
+    imp.data.knowledge.forEach(function(item){
+      var copy=cloneJson(item);
+      copy._ownerUserId=uid;copy._fromMember=imp.name;copy._fromDept=imp.department;
+      result.push(copy);
+    });
+  }
+  return result;
+}
+function getTeamDailyEntries(date){
+  var result=[];
+  for(var uid in STATE.importedData){
+    var imp=STATE.importedData[uid];
+    var data=imp.data||emptyUserData();
+    var archives=(Array.isArray(data.archives)?data.archives:[]).filter(function(item){return item.completedAt===date});
+    var note=data.dailySupps&&typeof data.dailySupps==='object'?String(data.dailySupps[date]||''):'';
+    if(archives.length||note){result.push({ownerUserId:uid,ownerName:imp.name||'未知成员',ownerDept:imp.department||'',archives:archives,note:note})}
+  }
+  result.sort(function(a,b){return a.ownerName.localeCompare(b.ownerName,'zh-CN')});
+  return result;
+}
 
 // ====== 驾驶舱数据 ======
 function getScopedIssues(){
-  var useTeam = STATE.user&&STATE.user.role==='admin'&&STATE.dashScope==='team';
+  var useTeam = canViewTeamData(STATE.user)&&STATE.dashScope==='team';
   return useTeam ? getMergedIssues() : STATE.data.issues.slice();
 }
 function isIssueCompleted(issue){
@@ -1123,7 +1202,7 @@ async function startUserSession(authUser){
   var profileResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,created_at').eq('id',authUser.id).single();
   if(profileResult.error) throw profileResult.error;
   STATE.user=profileToUser(profileResult.data);
-  STATE.issueFormTouched={};
+  clearIssueEditState();
   STATE.pendingNewIssue=null;
   pendingHistoryOps={};
   await loadUserData();
@@ -1187,9 +1266,10 @@ async function doLogout(){
   STATE.user = null;
   STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
   STATE.importedData = {};
+  clearIssueEditState();
   STATE.issueDetail=null;
-  STATE.issueFormTouched={};
   STATE.pendingNewIssue=null;
+  STATE.knowledgeQuery='';
   pendingHistoryOps={};
   STATE.voiceText='';
   STATE.voiceParsed={shop:'',desc:'',pri:'P2',deadline:''};
@@ -1202,29 +1282,39 @@ async function doLogout(){
 
 // ====== 添加口令（管理员） ======
 function showAddPasscode(){
+  if(!isAdmin(STATE.user)){T('只有管理员可以添加或设置成员权限');return}
   var h='<h3>新增成员</h3>';
-  h+='<p style="font-size:14px;line-height:1.8;color:var(--text2)">请让新成员打开登录页，点击「注册」并设置自己的用户名和密码。注册完成后，账号会自动出现在这里；成员只能访问自己的业务数据，管理员可在驾驶舱查看团队汇总。</p>';
+  h+='<p style="font-size:14px;line-height:1.8;color:var(--text2)">请让新成员打开登录页，点击「注册」并设置自己的用户名和密码。注册后默认为“普通成员”，账号会自动出现在团队管理中；管理员可点击成员右侧的编辑按钮调整权限。</p>';
+  h+='<div style="font-size:13px;line-height:1.8;color:var(--text2);padding:10px 12px;background:var(--border2);border-radius:6px">'+
+    '<div><strong>普通成员：</strong>只能查看和维护自己的数据。</div>'+
+    '<div><strong>全数据查看：</strong>可只读查看团队工单及历史、日报、已完成归档和知识库；只能维护自己的数据，不能管理成员。</div>'+
+    '<div><strong>管理员：</strong>可查看上述全部团队数据，并可修改团队工单、设置成员权限；他人的日报、归档和知识库仍为只读，他人工单仍不提供删除操作。</div></div>';
   h+='<div class="modal-actions">'+
     '<button class="btn btn-primary" onclick="closeModal()">我知道了</button></div>';
   showModal(h);
 }
 
 function editPasscode(userId){
+  if(!isAdmin(STATE.user)){T('只有管理员可以设置成员权限');return}
   var list=loadPasscodes();
   var p=null;
   for(var i=0;i<list.length;i++){if(list[i].userId===userId){p=list[i];break}}
   if(!p) return;
   var canEditRole = p.userId!==STATE.user.userId;
+  var currentTier=permissionTier(p);
   var h='<h3>编辑成员</h3>';
-  h+='<div class="form-group"><label>姓名</label><input id="ap-name" value="'+esc(p.name||'')+'"></div>';
-  h+='<div class="form-group"><label>用户名</label><input value="'+esc(p.username||'')+'" readonly style="background:var(--border2)"></div>';
-  h+='<div class="form-group"><label>部门</label><input id="ap-dept" value="'+esc(p.department||'')+'"></div>';
+  h+='<div class="form-group"><label>姓名</label><input id="ap-name" value="'+escAttr(p.name||'')+'"></div>';
+  h+='<div class="form-group"><label>用户名</label><input value="'+escAttr(p.username||'')+'" readonly style="background:var(--border2)"></div>';
+  h+='<div class="form-group"><label>部门</label><input id="ap-dept" value="'+escAttr(p.department||'')+'"></div>';
   if(canEditRole){
-    h+='<div class="form-group"><label>角色</label><select id="ap-role"><option value="member" '+(p.role==='member'?'selected':'')+'>成员</option><option value="admin" '+(p.role==='admin'?'selected':'')+'>管理员</option></select></div>';
+    h+='<div class="form-group"><label>数据权限</label><select id="ap-tier">'+
+      '<option value="member" '+(currentTier==='member'?'selected':'')+'>普通成员（仅本人）</option>'+
+      '<option value="viewer" '+(currentTier==='viewer'?'selected':'')+'>全数据查看（全团队只读）</option>'+
+      '<option value="admin" '+(currentTier==='admin'?'selected':'')+'>管理员（可改团队工单＋成员管理）</option></select></div>';
   }
-  h+='<p style="font-size:12px;color:var(--text3)">用户名和密码由成员本人管理；管理员不会看到成员密码。</p>';
+  h+='<p style="font-size:12px;line-height:1.7;color:var(--text3)">全数据查看者可只读查看团队工单及历史、日报、已完成归档和知识库，但只能修改自己的数据；管理员可以修改团队工单并设置成员权限，但他人的日报、归档和知识仍为只读，也不能删除他人工单。用户名和密码由成员本人管理，管理员不会看到成员密码。</p>';
   h+='<input type="hidden" id="ap-userid" value="'+userId+'">';
-  h+='<input type="hidden" id="ap-current-role" value="'+esc(p.role||'member')+'">';
+  h+='<input type="hidden" id="ap-current-tier" value="'+currentTier+'">';
   h+='<div class="modal-actions">'+
     '<button class="btn" onclick="closeModal()">取消</button>'+
     '<button class="btn btn-primary" onclick="savePasscodeForm()">保存</button></div>';
@@ -1235,11 +1325,12 @@ async function savePasscodeForm(){
   var name=document.getElementById('ap-name').value.trim();
   var dept=document.getElementById('ap-dept').value.trim();
   var userId=document.getElementById('ap-userid').value;
-  var roleEl=document.getElementById('ap-role');
-  var currentRole=document.getElementById('ap-current-role').value;
-  var role=roleEl?roleEl.value:currentRole;
+  var tierEl=document.getElementById('ap-tier');
+  var currentTier=document.getElementById('ap-current-tier').value;
+  var tier=tierEl?tierEl.value:currentTier;
+  var permission=permissionSettings(tier);
   if(!name){T('姓名不能为空');return}
-  var ok=await updatePasscode(userId,{name:name,department:dept,role:role,canViewAll:role==='admin'});
+  var ok=await updatePasscode(userId,{name:name,department:dept,role:permission.role,canViewAll:permission.canViewAll});
   if(!ok) return;
   if(userId===STATE.user.userId){STATE.user.name=name;STATE.user.department=dept}
   closeModal();
@@ -1280,6 +1371,82 @@ function pendingHistoryOperation(key){
   if(!pendingHistoryOps[key])pendingHistoryOps[key]={id:gid(),createdAt:nowIso()};
   return pendingHistoryOps[key];
 }
+function syncIssueArchiveForData(data,issue){
+  data.archives=Array.isArray(data.archives)?data.archives:[];
+  var issueId=String(issue.id);
+  if(issue.progress!=='已完结'){
+    data.archives=data.archives.filter(function(item){return String(item.sourceIssueId)!==issueId});
+    return false;
+  }
+  var existing=data.archives.find(function(item){return String(item.sourceIssueId)===issueId});
+  var snapshot={sourceIssueId:issue.id,shopName:issue.shopName,shopDesc:issue.shopDesc,priority:issue.priority,completedAt:existing&&existing.completedAt?existing.completedAt:ts(),createdAt:issue.createdAt||'',followUps:getIssueFollowUps(issue).slice()};
+  if(existing){Object.keys(snapshot).forEach(function(key){existing[key]=snapshot[key]});return false}
+  snapshot.id=gid();
+  data.archives.unshift(snapshot);
+  return true;
+}
+function unwrapTeamIssueMutationResult(data){
+  var result=Array.isArray(data)?data[0]:data;
+  if(result&&typeof result==='object'&&!result.payload&&!result.issue){
+    var keys=Object.keys(result);
+    if(keys.length===1&&result[keys[0]]&&typeof result[keys[0]]==='object')result=result[keys[0]];
+  }
+  return result&&typeof result==='object'?result:{};
+}
+function teamIssueMutationErrorCode(error){
+  var text=String(error&&error.message||'').toLowerCase();
+  if(text.indexOf('issue_not_found')>=0||text.indexOf('工单已被删除')>=0||text.indexOf('工单不存在')>=0)return 'issue_not_found';
+  if(text.indexOf('account_not_found')>=0||text.indexOf('成员数据不存在')>=0)return 'account_not_found';
+  if(text.indexOf('forbidden')>=0||text.indexOf('管理员')>=0)return 'forbidden';
+  return error&&error.code||'save_failed';
+}
+async function saveTeamIssueMutation(ownerUserId,issueId,mutation){
+  if(!db||!STATE.user||!isAdmin(STATE.user)||!ownerUserId||ownerUserId===STATE.user.userId){
+    return {ok:false,code:'forbidden'};
+  }
+  mutation=mutation||{};
+  var activeAdminId=STATE.user.userId;
+  pendingSaves++;
+  setCloudStatus('正在保存团队工单…','var(--warning)');
+  var task=saveQueue.catch(function(){}).then(async function(){
+    for(var attempt=0;attempt<3;attempt++){
+      var response=await db.rpc('admin_mutate_team_issue',{
+        p_owner_user_id:ownerUserId,
+        p_issue_id:String(issueId),
+        p_patch:mutation.patch||{},
+        p_history:mutation.history||null,
+        p_expected_issue_updated_at:mutation.expectedIssueUpdatedAt||null
+      });
+      if(!response.error)return {result:unwrapTeamIssueMutationResult(response.data),retries:attempt};
+      if(response.error.code!=='40001'&&response.error.code!=='40P01')throw response.error;
+      await new Promise(function(resolve){setTimeout(resolve,60*(attempt+1))});
+    }
+    var retryError=new Error('成员正在同时修改，自动重试仍未成功');retryError.code='concurrent_update';throw retryError;
+  });
+  saveQueue=task.catch(function(){});
+  return task.then(function(saved){
+    pendingSaves=Math.max(0,pendingSaves-1);
+    var rpcResult=saved.result||{};
+    if(STATE.user&&STATE.user.userId===activeAdminId&&isAdmin(STATE.user)&&STATE.importedData[ownerUserId]){
+      if(rpcResult.payload){
+        STATE.importedData[ownerUserId].data=normalizeUserData(rpcResult.payload);
+      }else if(rpcResult.issue){
+        var nextData=normalizeUserData(cloneJson(STATE.importedData[ownerUserId].data));
+        var issueIndex=nextData.issues.findIndex(function(item){return String(item.id)===String(issueId)});
+        if(issueIndex>=0)nextData.issues[issueIndex]=cloneJson(rpcResult.issue);
+        STATE.importedData[ownerUserId].data=nextData;
+      }
+      STATE.importedData[ownerUserId].importedAt=String(rpcResult.updated_at||'').slice(0,10);
+    }
+    setCloudStatus('已实时同步','var(--success)');
+    return {ok:true,metadata:{fieldConflict:!!rpcResult.conflict,conflict:rpcResult.conflict||null,issue:rpcResult.issue||null},retries:saved.retries||0};
+  }).catch(function(error){
+    pendingSaves=Math.max(0,pendingSaves-1);
+    console.error('[商云宝] 管理员保存团队工单失败',error);
+    setCloudStatus('团队工单保存失败','var(--danger)');
+    return {ok:false,code:teamIssueMutationErrorCode(error),error:error};
+  });
+}
 function findIssueRef(ownerUserId,issueId){
   var ownId=STATE.user?STATE.user.userId:'';
   var owner=ownerUserId||ownId;
@@ -1287,11 +1454,11 @@ function findIssueRef(ownerUserId,issueId){
     var own=findIssue(issueId);
     return own&&own.id?{issue:own,ownerUserId:ownId,ownerName:STATE.user.name,ownerDept:STATE.user.department||'',readOnly:false}:null;
   }
-  if(!STATE.user||STATE.user.role!=='admin') return null;
+  if(!canViewTeamData(STATE.user)) return null;
   var member=STATE.importedData[owner];
   if(!member||!member.data||!Array.isArray(member.data.issues)) return null;
   var issue=member.data.issues.find(function(item){return String(item.id)===String(issueId)});
-  return issue?{issue:issue,ownerUserId:owner,ownerName:member.name||'未知成员',ownerDept:member.department||'',readOnly:true}:null;
+  return issue?{issue:issue,ownerUserId:owner,ownerName:member.name||'未知成员',ownerDept:member.department||'',readOnly:!isAdmin(STATE.user)}:null;
 }
 function openIssueDetail(ownerUserId,issueId){
   var ref=findIssueRef(ownerUserId,issueId);
@@ -1351,7 +1518,7 @@ function renderIssueDetailModal(){
     h+='</div>';
   }
   if(ref.readOnly){
-    h+='<div class="readonly-note">该工单属于 '+esc(ref.ownerName)+'，管理员可查看全部历史，但需由成员本人新增跟进或修改状态。</div>';
+    h+='<div class="readonly-note">该工单属于 '+esc(ref.ownerName)+'，您可以查看全部历史，但新增跟进或修改状态需由工单负责人本人完成。</div>';
   }else{
     h+='<div class="followup-form"><div style="font-size:13px;font-weight:700;margin-bottom:8px">新增跟进</div>';
     h+='<div class="form-group"><label>本次跟进内容</label><textarea id="followup-content" maxlength="1000" placeholder="例：已联系门店，技术人员正在远程排查……" oninput="updateIssueDetailDraft(this.value)">'+esc(detail.draftContent||'')+'</textarea></div>';
@@ -1369,7 +1536,7 @@ async function addIssueFollowUp(){
   if(!detail||detail.saving) return;
   if(!canStartMutation())return;
   var ref=findIssueRef(detail.ownerUserId,detail.issueId);
-  if(!ref&&STATE.user&&STATE.user.role!=='admin') ref=findIssueRef(STATE.user.userId,detail.issueId);
+  if(!ref&&STATE.user&&!canViewTeamData(STATE.user)) ref=findIssueRef(STATE.user.userId,detail.issueId);
   if(!ref){T('工单已被删除或刚刚发生同步变化，请重新打开详情');return}
   if(ref.readOnly){T('团队成员工单仅支持查看');return}
   var input=document.getElementById('followup-content');
@@ -1383,6 +1550,29 @@ async function addIssueFollowUp(){
   detail.saving=true;
   var saveBtn=document.getElementById('followup-save-btn');if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='正在保存…'}
   if(!detail.pendingHistoryId){detail.pendingHistoryId=gid();detail.pendingHistoryCreatedAt=nowIso()}
+  if(ref.ownerUserId!==STATE.user.userId){
+    var requestedProgress=nextProgress;
+    var progressWasTouched=detail.draftProgressTouched;
+    var teamSaved=await saveTeamIssueMutation(ref.ownerUserId,detail.issueId,{
+      patch:progressWasTouched?{progress:requestedProgress}:{},
+      history:{id:detail.pendingHistoryId,type:'follow_up',content:content},
+      expectedIssueUpdatedAt:issue.updatedAt||null
+    });
+    detail.saving=false;
+    if(!teamSaved.ok){
+      if(teamSaved.code==='issue_not_found')T('该工单已被成员删除，本次跟进未写入');
+      else T('团队工单跟进未保存，内容已保留，请重试');
+      renderIssueDetailModal();
+      return;
+    }
+    detail.draftContent='';
+    detail.draftProgress=teamSaved.metadata.issue&&teamSaved.metadata.issue.progress?teamSaved.metadata.issue.progress:requestedProgress;
+    detail.draftProgressTouched=false;
+    detail.pendingHistoryId='';detail.pendingHistoryCreatedAt='';
+    renderApp();
+    T(teamSaved.metadata.fieldConflict?'跟进已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单跟进已同步云端');
+    return;
+  }
   appendIssueHistory(issue,'follow_up',content,oldProgress,nextProgress,{id:detail.pendingHistoryId,createdAt:detail.pendingHistoryCreatedAt});
   issue.progress=nextProgress;
   if(oldProgress!=='已完结'&&nextProgress==='已完结') archiveIssue(issue);
@@ -1411,11 +1601,10 @@ function editIssueFromDetail(){
   var detail=STATE.issueDetail;if(!detail)return;
   var ref=findIssueRef(detail.ownerUserId,detail.issueId);
   if(!ref||ref.readOnly){T('团队成员工单仅支持查看');return}
-  var issueId=detail.issueId;
+  var issueId=detail.issueId,ownerUserId=ref.ownerUserId;
   closeModal();
-  STATE.tab='issues';STATE.editingIssueId=issueId;STATE.issueFormTouched={};
-  renderApp();
-  setTimeout(function(){var pane=document.getElementById('pane-issues');if(pane)window.scrollTo({top:pane.offsetTop-60,behavior:'smooth'})},50);
+  STATE.tab='issues';
+  editIssue(issueId,ownerUserId);
 }
 document.addEventListener('keydown',function(event){if(event.key==='Escape'&&document.querySelector('.modal-mask'))closeModal()});
 
@@ -1424,6 +1613,7 @@ function showToast(msg){var t=document.getElementById('toast');t.textContent=msg
 
 // ====== 主导航 ======
 function switchTab(tab){
+  if(tab==='team'&&!isAdmin(STATE.user)){T('只有管理员可以进入团队管理');return}
   if(STATE.tab==='issues'&&tab!=='issues') stopVoiceRecognition(true);
   STATE.tab = tab;
   var tabs=document.querySelectorAll('.nav-tab');
@@ -1439,14 +1629,17 @@ function switchTab(tab){
 // ====== 主渲染 ======
 function renderApp(){
   if(!STATE.user){showLogin();return}
-  var isAdmin=STATE.user.role==='admin';
+  var isAdminUser=isAdmin(STATE.user);
+  var hasTeamAccess=canViewTeamData(STATE.user);
+  var currentTier=permissionTier(STATE.user);
+  if(!isAdminUser&&STATE.tab==='team') STATE.tab='dashboard';
   var tabs=[
     {id:'dashboard',label:'驾驶舱',icon:I.dashboard},
     {id:'issues',label:'问题排查',icon:I.alert},
     {id:'daily',label:'日报快照',icon:I.clipboard},
     {id:'knowledge',label:'知识速查',icon:I.book}
   ];
-  if(isAdmin) tabs.push({id:'team',label:'团队管理',icon:I.users});
+  if(isAdminUser) tabs.push({id:'team',label:'团队管理',icon:I.users});
 
   var h='';
   // Header
@@ -1454,7 +1647,7 @@ function renderApp(){
   h+='<div class="app-title"><span style="display:inline-block;width:18px;height:18px;vertical-align:middle;margin-right:4px">'+I.shield+'</span>商云宝·客户管家台</div>';
   h+='<div class="user-bar">';
   h+='<span class="user-name">'+esc(STATE.user.name)+'</span>';
-  h+='<span class="role-tag '+(isAdmin?'admin':'member')+'">'+(isAdmin?'管理员':'成员')+'</span>';
+  h+='<span class="role-tag '+currentTier+'">'+permissionLabel(STATE.user)+'</span>';
   h+='<button class="btn-logout" onclick="doLogout()">退出</button>';
   h+='</div></div>';
 
@@ -1477,7 +1670,7 @@ function renderApp(){
   h+='<div class="tab-pane'+(STATE.tab==='issues'?' active':'')+'" id="pane-issues">'+renderIssues()+'</div>';
   h+='<div class="tab-pane'+(STATE.tab==='daily'?' active':'')+'" id="pane-daily">'+renderDaily()+'</div>';
   h+='<div class="tab-pane'+(STATE.tab==='knowledge'?' active':'')+'" id="pane-knowledge">'+renderKnowledge()+'</div>';
-  if(isAdmin) h+='<div class="tab-pane'+(STATE.tab==='team'?' active':'')+'" id="pane-team">'+renderTeam()+'</div>';
+  if(isAdminUser) h+='<div class="tab-pane'+(STATE.tab==='team'?' active':'')+'" id="pane-team">'+renderTeam()+'</div>';
   h+='</div>';
 
   // Footer
@@ -1485,7 +1678,7 @@ function renderApp(){
   h+='<button class="btn btn-sm" onclick="exportData()">'+I.download+' 导出备份</button>';
   h+='<button class="btn btn-sm" onclick="manualCloudRefresh()">'+I.refresh+' 刷新云端</button>';
   h+='<button class="btn btn-sm" onclick="document.getElementById(\'import-file\').click()">'+I.upload+' 导入恢复</button>';
-  h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' '+(isAdmin?'清空我的数据':'清空数据')+'</button>';
+  h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' '+(hasTeamAccess?'清空我的数据':'清空数据')+'</button>';
   if(STATE.data.issues.some(function(i){return i._sample})||STATE.data.knowledge.some(function(k){return k._sample})){
     h+='<button class="btn btn-sm" onclick="clearSampleData()">'+I.refresh+' 清空示例</button>';
   }
@@ -1496,7 +1689,7 @@ function renderApp(){
   var realIssues = STATE.data.issues.filter(function(i){return !i._sample}).length;
   var realKnow = STATE.data.knowledge.filter(function(k){return !k._sample}).length;
   h+='<div id="data-status" style="text-align:center;font-size:11px;color:var(--text3);padding:4px 0 10px;border-top:1px solid var(--border2);margin:0 16px">';
-  h+=(isAdmin?'我的云端存储：':'云端存储：')+'<span id="cloud-state" style="color:'+cloudState.color+';font-weight:600">'+esc(cloudState.text)+'</span> · <span style="color:var(--success);font-weight:600">'+realIssues+'</span> 条问题 · <span style="color:var(--success);font-weight:600">'+realKnow+'</span> 条知识 · <span style="color:var(--success);font-weight:600">'+STATE.data.archives.length+'</span> 条归档';
+  h+=(hasTeamAccess?'我的云端存储：':'云端存储：')+'<span id="cloud-state" style="color:'+cloudState.color+';font-weight:600">'+esc(cloudState.text)+'</span> · <span style="color:var(--success);font-weight:600">'+realIssues+'</span> 条问题 · <span style="color:var(--success);font-weight:600">'+realKnow+'</span> 条知识 · <span style="color:var(--success);font-weight:600">'+STATE.data.archives.length+'</span> 条归档';
   h+='</div>';
 
   document.getElementById('app').innerHTML = h;
@@ -1565,8 +1758,8 @@ function renderDashboard(){
   var pie=dashPieData(),bar=dashBarData();
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.dashboard+'</span> 驾驶舱概览</div>';
 
-  // 管理员可明确选择统计本人或全团队，避免与“我的问题排查”混淆。
-  if(STATE.user.role==='admin'){
+  // 拥有全数据查看权限的账号可明确选择统计本人或全团队。
+  if(canViewTeamData(STATE.user)){
     h+='<div class="date-filter" style="margin-bottom:8px">';
     h+='<span style="font-size:12px;color:var(--text3);margin-right:4px">统计范围</span>';
     h+='<button class="btn btn-xs'+(STATE.dashScope==='team'?' btn-primary':'')+'" onclick="STATE.dashScope=\'team\';renderApp()">全团队</button>';
@@ -1590,7 +1783,7 @@ function renderDashboard(){
   h+='</div>';
 
   // KPIs
-  var totalLabel=STATE.user.role==='admin'&&STATE.dashScope==='team'?'团队总问题':'我的问题';
+  var totalLabel=canViewTeamData(STATE.user)&&STATE.dashScope==='team'?'团队总问题':'我的问题';
   h+='<div class="kpi-row">';
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--primary)">'+s.total+'</div><div class="kpi-label">'+totalLabel+'</div></div>';
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--warn)">'+(s.open+s.inProg)+'</div><div class="kpi-label">待处理</div></div>';
@@ -1629,7 +1822,7 @@ function renderDashboard(){
   h+='</div>';
 
   // 统计口径说明
-  if(STATE.user.role==='admin'){
+  if(canViewTeamData(STATE.user)){
     var memberIssueCount=getMergedIssues().filter(function(item){return !!item._fromMember}).length;
     h+='<div style="font-size:12px;color:var(--text2);margin-top:8px;padding:8px 10px;background:var(--primary-lighter);border-radius:6px">';
     if(STATE.dashScope==='team'){
@@ -1669,18 +1862,22 @@ function renderIssues(){
   h+='</div>';
 
   // Add form
+  var editingRef=getEditingIssueRef();
+  var editingIssue=editingRef?editingRef.issue:{};
+  var isTeamEditing=!!(editingRef&&STATE.user&&editingRef.ownerUserId!==STATE.user.userId);
   h+='<div class="card">';
   h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
-  h+='<span style="font-weight:700;font-size:14px">'+(STATE.editingIssueId?'编辑问题':'新增问题')+'</span>';
+  h+='<span style="font-weight:700;font-size:14px">'+(STATE.editingIssueId?(isTeamEditing?'管理员编辑 · '+esc(editingRef.ownerName):'编辑问题'):'新增问题')+'</span>';
   if(STATE.editingIssueId) h+='<button class="btn btn-xs" onclick="cancelIssueEdit()">取消编辑</button>';
   h+='</div>';
+  if(isTeamEditing)h+='<div class="readonly-note" style="margin:0 0 10px">正在修改 '+esc(editingRef.ownerName)+' 的工单；保存时只更新本次改动字段，并保留成员同时更新的其他数据。</div>';
   // 确定表单初始值：编辑模式用已有数据，新增模式用语音解析或默认值
   var vp = STATE.voiceParsed || {shop:'', desc:'', pri:'P2', deadline:''};
-  var formShop = STATE.editingIssueId ? findIssue(STATE.editingIssueId).shopName : vp.shop;
-  var formDesc = STATE.editingIssueId ? findIssue(STATE.editingIssueId).shopDesc : vp.desc;
-  var formPri  = STATE.editingIssueId ? findIssue(STATE.editingIssueId).priority : (vp.pri||'P2');
-  var formDl   = STATE.editingIssueId ? findIssue(STATE.editingIssueId).deadline : (vp.deadline||tsOffset(7));
-  var formProg = STATE.editingIssueId ? findIssue(STATE.editingIssueId).progress : '未开始';
+  var formShop = STATE.editingIssueId ? editingIssue.shopName : vp.shop;
+  var formDesc = STATE.editingIssueId ? editingIssue.shopDesc : vp.desc;
+  var formPri  = STATE.editingIssueId ? editingIssue.priority : (vp.pri||'P2');
+  var formDl   = STATE.editingIssueId ? editingIssue.deadline : (vp.deadline||tsOffset(7));
+  var formProg = STATE.editingIssueId ? editingIssue.progress : '未开始';
   h+='<div class="form-group"><label>门店名称</label><input id="iss-shop" placeholder="如：华东区-杭州西湖店" value="'+escAttr(formShop)+'" oninput="markIssueFieldTouched(\'shop\')"></div>';
   h+='<div class="form-group"><label>门店问题</label><textarea id="iss-desc" placeholder="描述遇到的问题" oninput="markIssueFieldTouched(\'desc\')">'+esc(formDesc)+'</textarea></div>';
   h+='<div class="form-row3">';
@@ -1710,7 +1907,7 @@ function renderIssues(){
   h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的问题（'+issues.length+'）</div>';
 
   if(issues.length===0){
-    h+='<div class="empty">我的问题已清空。管理员驾驶舱中的其他问题可能来自团队成员。</div>';
+    h+='<div class="empty">当前没有我的问题。拥有全数据查看权限时，驾驶舱中的其他问题可能来自团队成员。</div>';
   } else {
     for(var i=0;i<issues.length;i++){
       var iss=issues[i];
@@ -1752,11 +1949,11 @@ function renderIssues(){
     }
   }
 
-  // 管理员只读查看团队成员问题，避免把成员数据误认为自己的数据。
-  if(STATE.user.role==='admin'){
+  // 全数据查看者只读；管理员可修改团队工单，但不提供跨账号删除。
+  if(canViewTeamData(STATE.user)){
     var teamIssues=getMergedIssues().filter(function(item){return !!item._fromMember});
     teamIssues.sort(function(a,b){return (a.deadline||'').localeCompare(b.deadline||'')});
-    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员问题（'+teamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">只读，需由成员本人修改</span></div>';
+    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员问题（'+teamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">'+(isAdmin(STATE.user)?'管理员可修改，删除仍需成员本人操作':'全数据查看权限仅支持只读')+'</span></div>';
     if(teamIssues.length===0){
       h+='<div class="empty">当前没有团队成员问题</div>';
     }else{
@@ -1771,7 +1968,17 @@ function renderIssues(){
         h+='<span class="badge '+teamProgCls+'">'+esc(teamIssue.progress||'未开始')+'</span></div></div>';
         h+='<div class="ic-desc">'+esc(teamIssue.shopDesc||'')+'</div>';
         h+='<div class="ic-meta"><span>成员：'+esc(teamIssue._fromMember||'')+'</span><span>部门：'+esc(teamIssue._fromDept||'未填写')+'</span><span>截止：'+esc(teamIssue.deadline||'未设置')+'</span><span>历史跟进：'+getIssueFollowUps(teamIssue).length+' 条</span></div>';
-        h+='<div class="ic-actions"><button class="btn btn-xs" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'),decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'))">查看详情</button></div>';
+        h+='<div class="ic-actions">';
+        if(isAdmin(STATE.user)){
+          h+='<select style="font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:4px" onchange="changeProgress(decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'),this.value,decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'))">'+
+            '<option value="未开始"'+(teamIssue.progress==='未开始'?' selected':'')+'>未开始</option>'+
+            '<option value="跟进中"'+(teamIssue.progress==='跟进中'?' selected':'')+'>跟进中</option>'+
+            '<option value="阶段性完成"'+(teamIssue.progress==='阶段性完成'?' selected':'')+'>阶段性完成</option>'+
+            '<option value="已完结"'+(teamIssue.progress==='已完结'?' selected':'')+'>已完结</option></select>';
+        }
+        h+='<button class="btn btn-xs" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'),decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'))">查看详情</button>';
+        if(isAdmin(STATE.user))h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'),decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'))">'+I.edit+' 编辑</button>';
+        h+='</div>';
         h+='</div>';
       }
     }
@@ -1830,26 +2037,58 @@ async function updateIssue(){
   var id=STATE.editingIssueId;
   if(!id) return;
   if(!canStartMutation())return;
-  var iss=findIssue(id);
-  if(!iss||!iss.id){
+  var ref=getEditingIssueRef();
+  if(!ref||!ref.issue||!ref.issue.id){
     var removedDraft=captureIssueFormDraft();
-    STATE.editingIssueId=null;STATE.issueFormTouched={};STATE.pendingNewIssue=null;
+    clearIssueEditState();STATE.pendingNewIssue=null;
     STATE.voiceText=removedDraft?removedDraft.transcript:'';
     renderApp();restoreIssueFormDraft(Object.assign({},removedDraft||{}, {editingIssueId:null}));
     T('该工单已被另一设备删除；您的编辑内容已保留在新增表单');
     return;
   }
-  var before=JSON.parse(JSON.stringify(STATE.data));
+  if(ref.readOnly){T('全数据查看权限不能修改他人工单');return}
+  var iss=ref.issue;
   var oldProgress=iss.progress||'未开始';
   var wasDone=oldProgress==='已完结';
   var nextShopName=document.getElementById('iss-shop').value.trim();
   if(!nextShopName){T('请填写门店名称');return}
   var formDraft=captureIssueFormDraft();
+  var values={shopName:nextShopName,shopDesc:document.getElementById('iss-desc').value.trim(),priority:document.getElementById('iss-pri').value,deadline:document.getElementById('iss-deadline').value,progress:document.getElementById('iss-progress').value};
+  var touched=Object.assign({},STATE.issueFormTouched||{});
+  if(ref.ownerUserId!==STATE.user.userId){
+    var touchedKeys=Object.keys(touched).filter(function(key){return touched[key]});
+    if(touchedKeys.length===0){T('尚未修改任何工单字段');return}
+    var baseIssue=cloneJson(STATE.editingIssueBase||iss);
+    var teamHistoryKey='',teamHistoryOp=null;
+    if(touched.progress){
+      teamHistoryKey='team-update:'+ref.ownerUserId+':'+String(id)+':'+String(baseIssue.progress||'未开始')+'>'+values.progress;
+      teamHistoryOp=pendingHistoryOperation(teamHistoryKey);
+    }
+    var teamPatch={},fieldMap={shop:'shopName',desc:'shopDesc',pri:'priority',deadline:'deadline',progress:'progress'};
+    Object.keys(fieldMap).forEach(function(formKey){if(touched[formKey])teamPatch[fieldMap[formKey]]=values[fieldMap[formKey]]});
+    var teamHistory=teamHistoryOp?{id:teamHistoryOp.id,type:'status_change',content:'状态更新'}:null;
+    var teamResult=await saveTeamIssueMutation(ref.ownerUserId,id,{
+      patch:teamPatch,
+      history:teamHistory,
+      expectedIssueUpdatedAt:baseIssue.updatedAt||null
+    });
+    if(!teamResult.ok){
+      if(teamResult.code==='issue_not_found')T('该工单已被成员删除，编辑内容未写入');
+      else T('团队工单修改未同步，表单内容已保留，请重试');
+      return;
+    }
+    if(teamHistoryKey)delete pendingHistoryOps[teamHistoryKey];
+    clearIssueEditState();
+    renderApp();
+    T(teamResult.metadata.fieldConflict?'修改已保存；成员在您编辑期间更新过该工单，已保留其他最新数据，请核对':'团队工单修改已同步云端');
+    return;
+  }
+  var before=JSON.parse(JSON.stringify(STATE.data));
   iss.shopName=nextShopName;
-  iss.shopDesc=document.getElementById('iss-desc').value.trim();
-  iss.priority=document.getElementById('iss-pri').value;
-  iss.deadline=document.getElementById('iss-deadline').value;
-  iss.progress=document.getElementById('iss-progress').value;
+  iss.shopDesc=values.shopDesc;
+  iss.priority=values.priority;
+  iss.deadline=values.deadline;
+  iss.progress=values.progress;
   iss.updatedAt=nowIso();
   var historyKey='',historyOp=null;
   if(oldProgress!==iss.progress){
@@ -1859,8 +2098,7 @@ async function updateIssue(){
   }
   if(!wasDone&&iss.progress==='已完结') archiveIssue(iss);
   if(wasDone&&iss.progress!== '已完结') STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(iss.id)});
-  STATE.editingIssueId=null;
-  STATE.issueFormTouched={};
+  clearIssueEditState();
   var saving=saveUserData();
   renderApp();
   var saved=await saving;
@@ -1868,7 +2106,7 @@ async function updateIssue(){
     if(historyKey)delete pendingHistoryOps[historyKey];
     var remotelyDeleted=(saved.conflicts||[]).some(function(item){return item.type==='update_after_remote_delete'&&item.collection==='issues'});
     if(remotelyDeleted){
-      STATE.editingIssueId=null;STATE.pendingNewIssue=null;STATE.voiceText=formDraft?formDraft.transcript:'';
+      clearIssueEditState();STATE.pendingNewIssue=null;STATE.voiceText=formDraft?formDraft.transcript:'';
       var recoveryDraft=Object.assign({},formDraft||{}, {editingIssueId:null});
       renderApp();restoreIssueFormDraft(recoveryDraft);
       T('该工单已在另一设备删除；您的编辑内容已保留在新增表单');
@@ -1877,17 +2115,48 @@ async function updateIssue(){
     var updateDeleteConflict=(saved.conflicts||[]).some(function(item){return item.type==='remote_delete_overridden_by_followup'&&item.collection==='issues'});
     T(updateDeleteConflict?'修改已保存；另一设备曾删除此工单，因包含新状态记录已自动保留':((saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'})?'修改已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'修改已同步云端'));
   }else{
-    STATE.data=before;STATE.editingIssueId=id;STATE.issueFormTouched=Object.assign({},formDraft&&formDraft.touched||{});
+    STATE.data=before;STATE.editingIssueId=id;STATE.editingIssueOwnerUserId=STATE.user.userId;STATE.editingIssueBase=cloneJson(iss);STATE.issueFormTouched=Object.assign({},formDraft&&formDraft.touched||{});
     renderApp();restoreIssueFormDraft(formDraft);T('修改未同步，已保留编辑内容，请重试');
   }
 }
-function editIssue(id){
+function editIssue(id,ownerUserId){
+  var owner=ownerUserId||(STATE.user?STATE.user.userId:'');
+  var ref=findIssueRef(owner,id);
+  if(!ref){T('该工单已删除或无权查看');return}
+  if(ref.readOnly){T('全数据查看权限不能修改他人工单');return}
   STATE.editingIssueId=id;
+  STATE.editingIssueOwnerUserId=owner;
+  STATE.editingIssueBase=cloneJson(ref.issue);
   STATE.issueFormTouched={};
   renderApp();
   window.scrollTo({top:document.getElementById('pane-issues').offsetTop-60,behavior:'smooth'});
 }
-async function changeProgress(id, prog){
+async function changeProgress(id, prog, ownerUserId){
+  var owner=ownerUserId||(STATE.user?STATE.user.userId:'');
+  if(owner!==STATE.user.userId){
+    var ref=findIssueRef(owner,id);
+    if(!ref){T('该工单已删除或无权查看');renderApp();return}
+    if(ref.readOnly){T('全数据查看权限不能修改他人工单');renderApp();return}
+    var displayedProgress=ref.issue.progress||'未开始';
+    if(displayedProgress===prog)return;
+    if(!canStartMutation()){renderApp();return}
+    var teamHistoryKey='team-progress:'+owner+':'+String(id)+':'+displayedProgress+'>'+prog;
+    var teamHistoryOp=pendingHistoryOperation(teamHistoryKey);
+    var result=await saveTeamIssueMutation(owner,id,{
+      patch:{progress:prog},
+      history:{id:teamHistoryOp.id,type:'status_change',content:'状态更新'},
+      expectedIssueUpdatedAt:ref.issue.updatedAt||null
+    });
+    if(result.ok){
+      delete pendingHistoryOps[teamHistoryKey];
+      renderApp();
+      T(result.metadata.fieldConflict?'进度已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单进度已更新并同步');
+    }else{
+      renderApp();
+      T(result.code==='issue_not_found'?'该工单已被成员删除':'团队工单进度未同步，请重试');
+    }
+    return;
+  }
   var iss=findIssue(id);
   if(!iss||!iss.id) return;
   var oldProgress=iss.progress||'未开始';
@@ -1927,15 +2196,7 @@ async function deleteIssue(id){
   T(saved.conflicts&&saved.conflicts.length?'另一设备刚更新了此工单；为保护最新跟进，本次未删除':'已删除并同步云端');
 }
 function archiveIssue(issue){
-  var existing=STATE.data.archives.find(function(item){return String(item.sourceIssueId)===String(issue.id)});
-  var snapshot={sourceIssueId:issue.id,shopName:issue.shopName,shopDesc:issue.shopDesc,priority:issue.priority,completedAt:ts(),createdAt:issue.createdAt||'',followUps:getIssueFollowUps(issue).slice()};
-  if(existing){
-    Object.keys(snapshot).forEach(function(key){existing[key]=snapshot[key]});
-    return;
-  }
-  snapshot.id=gid();
-  STATE.data.archives.unshift(snapshot);
-  T(issue.shopName+' 已归档');
+  if(syncIssueArchiveForData(STATE.data,issue))T(issue.shopName+' 已归档');
 }
 
 // ====== 语音录入 ======
@@ -2215,21 +2476,44 @@ function renderDaily(){
   var archs=STATE.data.archives.filter(function(a){return a.completedAt===date});
   var supp=STATE.data.dailySupps[date]||'';
 
+  h+='<div style="font-weight:700;font-size:14px;margin:12px 0 8px">我的日报 / 已完成归档</div>';
   if(archs.length===0&&!supp){
     h+='<div class="empty">当日暂无完结记录</div>';
   } else {
     h+='<div class="daily-summary">';
-    h+='<strong>今日完结 '+archs.length+' 项</strong>';
+    h+='<strong>当日完结 '+archs.length+' 项</strong>';
     for(var i=0;i<archs.length;i++){
-      h+='<div class="daily-item"><span class="badge badge-'+archs[i].priority.toLowerCase()+'">'+esc(archs[i].priority)+'</span>'+
+      var ownArchivePriority=safePriority(archs[i].priority);
+      h+='<div class="daily-item"><span class="badge badge-'+ownArchivePriority.toLowerCase()+'">'+ownArchivePriority+'</span>'+
         esc(archs[i].shopName)+' - '+esc(archs[i].shopDesc||'')+'</div>';
     }
     h+='</div>';
   }
 
-  h+='<div class="card"><div class="card-ttl">手动备注</div>';
+  h+='<div class="card"><div class="card-ttl">我的日报备注 <span style="font-size:11px;color:var(--text3);font-weight:400">仅本人可编辑</span></div>';
   h+='<div class="form-group"><textarea id="daily-supp" placeholder="补充今日总结、待跟进事项...">'+esc(supp)+'</textarea></div>';
   h+='<button class="btn btn-sm btn-primary" onclick="saveDailySupp()">保存备注</button></div>';
+
+  if(canViewTeamData(STATE.user)){
+    var teamDaily=getTeamDailyEntries(date);
+    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队日报 / 已完成归档（'+teamDaily.length+' 人）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">只读</span></div>';
+    if(teamDaily.length===0){
+      h+='<div class="empty">所选日期暂无团队成员日报或已完成归档</div>';
+    }else{
+      for(var td=0;td<teamDaily.length;td++){
+        var memberDaily=teamDaily[td];
+        h+='<div class="card" style="border-left:3px solid var(--primary)">';
+        h+='<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:8px"><strong>'+esc(memberDaily.ownerName)+'</strong><span style="font-size:11px;color:var(--text3)">'+esc(memberDaily.ownerDept||'未填写部门')+' · 团队只读</span></div>';
+        h+='<div style="font-size:12px;color:var(--text2);margin-bottom:6px">当日已完成 '+memberDaily.archives.length+' 项</div>';
+        for(var ta=0;ta<memberDaily.archives.length;ta++){
+          var teamArchive=memberDaily.archives[ta],teamArchivePriority=safePriority(teamArchive.priority);
+          h+='<div class="daily-item"><span class="badge badge-'+teamArchivePriority.toLowerCase()+'">'+teamArchivePriority+'</span>'+esc(teamArchive.shopName||'未知门店')+' - '+esc(teamArchive.shopDesc||'')+'</div>';
+        }
+        if(memberDaily.note)h+='<div style="font-size:12px;line-height:1.7;color:var(--text2);background:var(--border2);padding:8px 10px;border-radius:6px;margin-top:8px"><strong>日报备注：</strong>'+esc(memberDaily.note)+'</div>';
+        h+='</div>';
+      }
+    }
+  }
   return h;
 }
 async function saveDailySupp(){
@@ -2244,7 +2528,7 @@ async function saveDailySupp(){
 function renderKnowledge(){
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.book+'</span> 知识库速查</div>';
   h+='<div class="search-box">'+I.search+
-    '<input type="text" placeholder="搜索业务规则、编码、知识域..." id="kw-search" oninput="renderApp()"></div>';
+    '<input type="text" placeholder="搜索业务规则、编码、知识域..." id="kw-search" value="'+escAttr(STATE.knowledgeQuery||'')+'" oninput="STATE.knowledgeQuery=this.value;renderApp()"></div>';
 
   // Add form
   h+='<div class="card" style="border-style:dashed">';
@@ -2257,19 +2541,20 @@ function renderKnowledge(){
   h+='</div>';
 
   // List
-  var query=(document.getElementById('kw-search')?document.getElementById('kw-search').value:'').trim().toLowerCase();
-  var list=STATE.data.knowledge.slice();
-  if(query){
-    list=list.filter(function(k){
-      return (k.domain||'').toLowerCase().indexOf(query)>=0||
-        (k.code||'').toLowerCase().indexOf(query)>=0||
-        (k.title||'').toLowerCase().indexOf(query)>=0||
-        (k.content||'').toLowerCase().indexOf(query)>=0;
-    });
+  var query=String(STATE.knowledgeQuery||'').trim().toLowerCase();
+  function matchesKnowledge(k){
+    return !query||(k.domain||'').toLowerCase().indexOf(query)>=0||
+      (k.code||'').toLowerCase().indexOf(query)>=0||
+      (k.title||'').toLowerCase().indexOf(query)>=0||
+      (k.content||'').toLowerCase().indexOf(query)>=0||
+      (k._fromMember||'').toLowerCase().indexOf(query)>=0||
+      (k._fromDept||'').toLowerCase().indexOf(query)>=0;
   }
-  h+='<div style="font-size:13px;color:var(--text3);margin-bottom:8px">共 '+list.length+' 条'+(query?'（搜索：'+esc(query)+'）':'')+'</div>';
+  var list=STATE.data.knowledge.slice();
+  list=list.filter(matchesKnowledge);
+  h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的知识（'+list.length+'）'+(query?'<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">搜索：'+esc(query)+'</span>':'')+'</div>';
   if(list.length===0){
-    h+='<div class="empty">'+(query?'无匹配结果':'暂无知识沉淀')+'</div>';
+    h+='<div class="empty">'+(query?'我的知识中无匹配结果':'暂无我的知识沉淀')+'</div>';
   } else {
     for(var i=0;i<list.length;i++){
       var k=list[i];
@@ -2277,8 +2562,24 @@ function renderKnowledge(){
       h+='<div class="kc-domain">'+esc(k.domain||'')+' <span class="kc-code">'+esc(k.code||'')+'</span></div>';
       h+='<div class="kc-title">'+esc(k.title||'')+'</div>';
       h+='<div class="kc-content">'+esc(k.content||'')+'</div>';
-      h+='<div style="margin-top:8px"><button class="btn btn-xs btn-outline-danger" onclick="deleteKnowledge(\''+k.id+'\')">删除</button></div>';
+      h+='<div style="margin-top:8px"><button class="btn btn-xs btn-outline-danger" onclick="deleteKnowledge(decodeURIComponent(\''+inlineArg(k.id)+'\'))">删除</button></div>';
       h+='</div>';
+    }
+  }
+  if(canViewTeamData(STATE.user)){
+    var teamKnowledge=getTeamKnowledgeEntries().filter(matchesKnowledge);
+    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队知识（'+teamKnowledge.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">只读，不可编辑或删除</span></div>';
+    if(teamKnowledge.length===0){
+      h+='<div class="empty">'+(query?'团队知识中无匹配结果':'当前没有团队成员知识')+'</div>';
+    }else{
+      for(var tk=0;tk<teamKnowledge.length;tk++){
+        var teamItem=teamKnowledge[tk];
+        h+='<div class="know-card" style="border-left:3px solid var(--primary)">';
+        h+='<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px"><span class="kc-domain">'+esc(teamItem.domain||'未分类')+' <span class="kc-code">'+esc(teamItem.code||'')+'</span></span><span style="font-size:11px;color:var(--text3)">'+esc(teamItem._fromMember||'未知成员')+' · '+esc(teamItem._fromDept||'未填写部门')+'</span></div>';
+        h+='<div class="kc-title">'+esc(teamItem.title||'')+'</div>';
+        h+='<div class="kc-content">'+esc(teamItem.content||'')+'</div>';
+        h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">团队只读</div></div>';
+      }
     }
   }
   return h;
@@ -2306,11 +2607,12 @@ async function deleteKnowledge(id){
 
 // ====== 团队管理（管理员专属）=======
 function renderTeam(){
+  if(!isAdmin(STATE.user)) return '<div class="empty">只有管理员可以进入团队管理</div>';
   var passcodes=loadPasscodes();
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.users+'</span> 团队管理</div>';
   h+='<div class="import-section">';
   h+='<div class="is-title">团队数据已自动汇总</div>';
-  h+='<div class="is-desc">成员保存的业务数据会实时写入 Supabase 云端。管理员驾驶舱已自动汇总 '+Object.keys(STATE.importedData).length+' 位其他成员的数据，不再需要收集和导入 JSON 文件。</div>';
+  h+='<div class="is-desc">成员保存的业务数据会实时写入 Supabase 云端。管理员驾驶舱已自动汇总 '+Object.keys(STATE.importedData).length+' 位其他成员的数据；可在下方把成员设置为普通成员、全数据查看或管理员。</div>';
   h+='</div>';
   h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
   h+='<span style="font-weight:700;font-size:14px">成员管理（'+passcodes.length+' 人）</span>';
@@ -2327,7 +2629,7 @@ function renderTeam(){
       h+='<div class="pw-info">';
       h+='<div class="pw-name">'+esc(p.name||'')+(isSelf?' <span style="font-size:10px;color:var(--text3)">(我)</span>':'')+'</div>';
       h+='<div class="pw-meta">'+esc(p.department||'')+' · 用户名: <span class="pw-code">'+esc(p.username||'')+'</span> · '+
-        (p.role==='admin'?'管理员':'成员')+' · 注册于 '+esc(p.createdAt||'')+'</div>';
+        permissionLabel(p)+' · 注册于 '+esc(p.createdAt||'')+'</div>';
       h+='</div>';
       h+='<div class="pw-actions">';
       h+='<button class="btn btn-xs" onclick="editPasscode(\''+p.userId+'\')">'+I.edit+'</button>';
@@ -2387,15 +2689,14 @@ function importData(input){
 }
 async function confirmClear(){
   if(!canStartMutation())return;
-  var isAdmin=STATE.user&&STATE.user.role==='admin';
-  var scopeText=isAdmin?'仅清空当前管理员账号“'+STATE.user.name+'”的个人数据，不会删除其他成员数据。':'将清空当前账号的全部数据。';
+  var hasTeamAccess=canViewTeamData(STATE.user);
+  var scopeText=hasTeamAccess?'仅清空当前账号“'+STATE.user.name+'”的个人数据，不会删除其他成员数据。':'将清空当前账号的全部数据。';
   if(!confirm('⚠️ '+scopeText+'\n包括问题、知识库、归档和备注，此操作不可恢复！\n\n确定继续？')) return;
-  if(!confirm('再次确认：'+(isAdmin?'清空我的数据（保留团队成员数据）？':'清空当前账号全部数据？'))) return;
+  if(!confirm('再次确认：'+(hasTeamAccess?'清空我的数据（保留团队成员数据）？':'清空当前账号全部数据？'))) return;
   stopVoiceRecognition(true);
   STATE.data={issues:[],knowledge:[],archives:[],dailySupps:{}};
-  STATE.editingIssueId=null;
+  clearIssueEditState();
   STATE.issueDetail=null;
-  STATE.issueFormTouched={};
   STATE.pendingNewIssue=null;
   pendingHistoryOps={};
   STATE.voiceText='';
@@ -2405,7 +2706,7 @@ async function confirmClear(){
   STATE.voiceMissing=[];
   var saving=saveUserData();
   renderApp();
-  T((await saving)?(isAdmin?'我的数据已清空；团队成员数据已保留':'当前账号数据已清空并同步'):'清空操作未同步，请重试');
+  T((await saving)?(hasTeamAccess?'我的数据已清空；团队成员数据已保留':'当前账号数据已清空并同步'):'清空操作未同步，请重试');
 }
 
 // ====== 初始化 ======

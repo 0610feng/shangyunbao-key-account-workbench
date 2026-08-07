@@ -1676,6 +1676,7 @@ function renderApp(){
   // Footer
   h+='<div class="footer-actions">';
   h+='<button class="btn btn-sm" onclick="exportData()">'+I.download+' 导出备份</button>';
+  h+='<a class="btn btn-sm" href="V1.0_商云宝客户管家台_WPS导入恢复字段模版.xlsx" download="V1.0_商云宝客户管家台_WPS导入恢复字段模版.xlsx" aria-label="下载 WPS 导入恢复字段模版" title="下载 WPS 导入恢复字段模版" style="text-decoration:none">'+I.download+' 下载导入模板</a>';
   h+='<button class="btn btn-sm" onclick="manualCloudRefresh()">'+I.refresh+' 刷新云端</button>';
   h+='<button class="btn btn-sm" onclick="document.getElementById(\'import-file\').click()">'+I.upload+' 导入恢复</button>';
   h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' '+(hasTeamAccess?'清空我的数据':'清空数据')+'</button>';

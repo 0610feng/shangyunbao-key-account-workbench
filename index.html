@@ -277,6 +277,7 @@ var STATE = {
   editingIssueId: null,
   voiceText: '',
   voiceParsed: {shop:'', desc:'', pri:'P2', deadline:''},
+  voiceDetected: {shop:'', desc:'', pri:'', deadline:''},
   voiceParsedReady: false,
   voiceMissing: []
 };
@@ -286,6 +287,10 @@ function gid(){return 'i'+Date.now().toString(36)+Math.random().toString(36).sli
 function ts(){var d=new Date();return d.getFullYear()+'-'+S(d.getMonth()+1)+'-'+S(d.getDate())}
 function tsOffset(n){var d=new Date();d.setDate(d.getDate()+n);return d.getFullYear()+'-'+S(d.getMonth()+1)+'-'+S(d.getDate())}
 function S(n){return String(n).padStart(2,'0')}
+function parseLocalDate(value){
+  var m=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m?new Date(parseInt(m[1]),parseInt(m[2])-1,parseInt(m[3])):new Date(value);
+}
 function T(msg){var e=document.getElementById('toast');e.textContent=msg;e.classList.add('show');setTimeout(function(){e.classList.remove('show')},2000)}
 function esc(s){var d=document.createElement('div');d.textContent=s;return d.innerHTML}
 
@@ -401,6 +406,38 @@ function hasActiveFormInput(){
   var el=document.activeElement;
   return !!(el&&(/^(INPUT|TEXTAREA|SELECT)$/).test(el.tagName));
 }
+function captureIssueFormDraft(){
+  if(STATE.tab!=='issues') return null;
+  var shop=document.getElementById('iss-shop'),desc=document.getElementById('iss-desc');
+  var pri=document.getElementById('iss-pri'),deadline=document.getElementById('iss-deadline');
+  var progress=document.getElementById('iss-progress'),transcript=document.getElementById('voice-transcript');
+  if(!shop||!desc||!pri||!deadline||!progress) return null;
+  var active=document.activeElement,activeId=active&&active.id?active.id:'';
+  var selectionStart=null,selectionEnd=null;
+  if(active&&typeof active.selectionStart==='number'){
+    selectionStart=active.selectionStart;selectionEnd=active.selectionEnd;
+  }
+  return {
+    shop:shop.value,desc:desc.value,pri:pri.value,deadline:deadline.value,progress:progress.value,
+    transcript:transcript?transcript.value:STATE.voiceText,
+    activeId:activeId,selectionStart:selectionStart,selectionEnd:selectionEnd
+  };
+}
+function restoreIssueFormDraft(draft){
+  if(!draft||STATE.tab!=='issues') return;
+  var values={'iss-shop':draft.shop,'iss-desc':draft.desc,'iss-pri':draft.pri,'iss-deadline':draft.deadline,'iss-progress':draft.progress,'voice-transcript':draft.transcript};
+  Object.keys(values).forEach(function(id){var el=document.getElementById(id);if(el)el.value=values[id]||''});
+  STATE.voiceText=draft.transcript||'';
+  if(draft.activeId){
+    var active=document.getElementById(draft.activeId);
+    if(active){
+      active.focus();
+      if(draft.selectionStart!==null&&typeof active.setSelectionRange==='function'){
+        active.setSelectionRange(draft.selectionStart,draft.selectionEnd);
+      }
+    }
+  }
+}
 function scheduleRealtimeRefresh(){
   clearTimeout(realtimeRefreshTimer);
   realtimeRefreshTimer=setTimeout(function(){
@@ -421,6 +458,7 @@ async function refreshFromCloud(options){
   if(pendingSaves>0) await saveQueue.catch(function(){});
   if(!STATE.user) return false;
   isRefreshingCloud=true;
+  var issueDraft=captureIssueFormDraft();
   var beforeOwn=dataSignature(STATE.data);
   var beforeTeam=dataSignature(STATE.importedData);
   try{
@@ -429,6 +467,7 @@ async function refreshFromCloud(options){
     var changed=beforeOwn!==dataSignature(STATE.data)||beforeTeam!==dataSignature(STATE.importedData);
     if(changed){
       renderApp();
+      restoreIssueFormDraft(issueDraft);
       if(!options.silent) T(options.source==='realtime'?'已收到其他设备的最新数据':'已刷新云端最新数据');
     }
     setCloudStatus('已实时同步','var(--success)');
@@ -572,7 +611,7 @@ function dashStats(){
     else if(s==='未开始'||s==='') open++;
     else if(s==='跟进中'||s==='阶段性完成') inProg++;
     if(issues[i].deadline){
-      var dl=new Date(issues[i].deadline);dl.setHours(0,0,0,0);
+      var dl=parseLocalDate(issues[i].deadline);dl.setHours(0,0,0,0);
       if(dl<pt&&s!=='已完结') overdue++;
     }
   }
@@ -645,7 +684,7 @@ function getOpenWorkItems(){
     if(isIssueCompleted(iss)) continue;
     var type='pending';
     if(iss.deadline){
-      var dl=new Date(iss.deadline);dl.setHours(0,0,0,0);
+      var dl=parseLocalDate(iss.deadline);dl.setHours(0,0,0,0);
       if(dl<today) type='overdue';
       else if(dl.getTime()===today.getTime()) type='today';
     }
@@ -725,6 +764,7 @@ async function clearSampleData(){
 // ====== 登录 / 注册 ======
 function showLogin(errorMsg){
   stopWorkCarousel();
+  stopVoiceRecognition(true);
   STATE.user = null;
   STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
   STATE.importedData = {};
@@ -847,6 +887,7 @@ async function doLogin(){
 
 async function doLogout(){
   if(!confirm('确定退出登录？')) return;
+  stopVoiceRecognition(true);
   await saveQueue.catch(function(){});
   stopRealtimeSync();
   if(db) await db.auth.signOut();
@@ -855,6 +896,7 @@ async function doLogout(){
   STATE.importedData = {};
   STATE.voiceText='';
   STATE.voiceParsed={shop:'',desc:'',pri:'P2',deadline:''};
+  STATE.voiceDetected={shop:'',desc:'',pri:'',deadline:''};
   STATE.voiceParsedReady=false;
   STATE.voiceMissing=[];
   TEAM_PROFILES=[];
@@ -917,6 +959,7 @@ function showToast(msg){var t=document.getElementById('toast');t.textContent=msg
 
 // ====== 主导航 ======
 function switchTab(tab){
+  if(STATE.tab==='issues'&&tab!=='issues') stopVoiceRecognition(true);
   STATE.tab = tab;
   var tabs=document.querySelectorAll('.nav-tab');
   for(var i=0;i<tabs.length;i++){tabs[i].classList.remove('active')}
@@ -1149,7 +1192,8 @@ function renderIssues(){
   h+='<div class="voice-transcript-label"><span>语音转文字（可编辑）</span><span class="voice-status" id="voice-status">等待录音，或直接输入文字</span></div>';
   h+='<textarea class="voice-transcript" id="voice-transcript" placeholder="示例：门店名称杭州西湖店，门店问题收银系统无法结账，P0紧急，截止明天。" oninput="updateVoiceText(this.value)">'+esc(STATE.voiceText)+'</textarea>';
   if(STATE.voiceParsedReady){
-    h+='<div class="voice-mapped">已识别：门店 '+esc(STATE.voiceParsed.shop||'待确认')+'；问题 '+esc(STATE.voiceParsed.desc||'待确认')+'；紧急程度 '+esc(STATE.voiceParsed.pri||'待确认')+'；截止 '+esc(STATE.voiceParsed.deadline||'待确认')+'。请在下方表单复核。</div>';
+    var vd=STATE.voiceDetected||{shop:'',desc:'',pri:'',deadline:''};
+    h+='<div class="voice-mapped">已识别：门店 '+esc(vd.shop||'待确认')+'；问题 '+esc(vd.desc||'待确认')+'；紧急程度 '+esc(vd.pri||'待确认')+'；截止 '+esc(vd.deadline||'待确认')+'。请在下方表单复核。</div>';
     if(STATE.voiceMissing&&STATE.voiceMissing.length) h+='<div class="voice-mapped" style="background:var(--warn2);color:#92400e">未能确定：'+esc(STATE.voiceMissing.join('、'))+'，请人工确认。</div>';
   }
   h+='</div>';
@@ -1203,7 +1247,7 @@ function renderIssues(){
       var iss=issues[i];
       var isOverdue=false;
       if(iss.deadline&&iss.progress!=='已完结'){
-        var dl=new Date(iss.deadline);dl.setHours(0,0,0,0);
+        var dl=parseLocalDate(iss.deadline);dl.setHours(0,0,0,0);
         var now=new Date();now.setHours(0,0,0,0);
         if(dl<now) isOverdue=true;
       }
@@ -1274,6 +1318,7 @@ async function addIssue(){
   if(!shop){T('请填写门店名称');return}
   var issue={id:gid(),shopName:shop,shopDesc:desc,priority:pri,deadline:dl,progress:prog,createdAt:ts()};
   STATE.voiceParsed = {shop:'', desc:'', pri:'P2', deadline:''};
+  STATE.voiceDetected = {shop:'', desc:'', pri:'', deadline:''};
   STATE.voiceText = '';
   STATE.voiceParsedReady = false;
   STATE.voiceMissing = [];
@@ -1334,6 +1379,17 @@ var recognition=null;
 var isRecognizing=false;
 var voiceSessionBase='';
 var voiceLastError='';
+var voiceSessionId=0;
+
+function stopVoiceRecognition(silent){
+  voiceSessionId++;
+  if(recognition&&isRecognizing){
+    try{recognition.abort()}catch(e){}
+  }
+  isRecognizing=false;
+  voiceLastError='';
+  if(!silent) setVoiceUi(false,'录音','录音已停止，可修改文字');
+}
 
 function setVoiceUi(recording,label,status){
   var btn=document.getElementById('voice-btn');
@@ -1366,8 +1422,9 @@ function writeVoiceTranscript(value){
 }
 
 function clearVoiceTranscript(){
-  if(isRecognizing&&recognition){try{recognition.stop()}catch(e){}}
+  stopVoiceRecognition(true);
   STATE.voiceText='';
+  STATE.voiceDetected={shop:'',desc:'',pri:'',deadline:''};
   STATE.voiceParsedReady=false;
   STATE.voiceMissing=[];
   var transcript=document.getElementById('voice-transcript');
@@ -1400,12 +1457,14 @@ function startVoice(){
   STATE.voiceText=transcript?transcript.value.trim():STATE.voiceText.trim();
   voiceSessionBase=STATE.voiceText;
   recognition = new SR();
+  var activeVoiceSession=++voiceSessionId;
   recognition.lang = 'zh-CN';
   recognition.interimResults = true;
   recognition.maxAlternatives = 1;
   recognition.continuous = true;
 
   recognition.onstart = function(){
+    if(activeVoiceSession!==voiceSessionId) return;
     isRecognizing = true;
     voiceLastError='';
     setVoiceUi(true,'停止','正在录音并实时转写...');
@@ -1413,6 +1472,7 @@ function startVoice(){
   };
 
   recognition.onresult = function(e){
+    if(activeVoiceSession!==voiceSessionId) return;
     var finalText='',interimText='';
     for(var i=0; i<e.results.length; i++){
       var segment=e.results[i][0].transcript||'';
@@ -1425,6 +1485,7 @@ function startVoice(){
   };
 
   recognition.onerror = function(e){
+    if(activeVoiceSession!==voiceSessionId) return;
     isRecognizing = false;
     var msg = '语音识别出错';
     if(e.error === 'not-allowed') msg = '麦克风权限被拒绝，请在浏览器设置中允许麦克风访问';
@@ -1438,6 +1499,7 @@ function startVoice(){
   };
 
   recognition.onend = function(){
+    if(activeVoiceSession!==voiceSessionId) return;
     isRecognizing = false;
     setVoiceUi(false,'录音',voiceLastError||(STATE.voiceText?'录音已结束，可修改文字后识别':'未识别到文字，可重新录音'));
   };
@@ -1473,8 +1535,9 @@ function parseVoiceDeadline(text){
   m=text.match(/(?:本周|下周|周|星期)([一二三四五六日天])/);
   if(m){
     var weekMap={一:1,二:2,三:3,四:4,五:5,六:6,日:0,天:0};
-    var target=weekMap[m[1]],diff=(target-now.getDay()+7)%7;
-    if(/下周/.test(m[0])) diff+=diff===0?7:7;
+    var target=weekMap[m[1]],currentDay=now.getDay()||7,targetDay=target||7;
+    var diff=/下周/.test(m[0])?(7-currentDay+targetDay):(targetDay-currentDay);
+    if(diff<0) diff+=7;
     var wd=new Date(now);wd.setDate(now.getDate()+diff);
     return wd.getFullYear()+'-'+S(wd.getMonth()+1)+'-'+S(wd.getDate());
   }
@@ -1487,12 +1550,19 @@ function parseVoiceText(text){
   var normalized=String(text||'').replace(/\s+/g,' ').trim();
   var shop='',desc='',pri='',deadline=parseVoiceDeadline(normalized);
 
-  if(/[Pp]\s*0|P零|最高优先级|特急|非常紧急/.test(normalized)) pri='P0';
-  else if(/[Pp]\s*1|P一|高优先级|重要|尽快处理/.test(normalized)) pri='P1';
-  else if(/[Pp]\s*2|P二|低优先级|普通|一般/.test(normalized)) pri='P2';
-  else if(/无法营业|全店(?:瘫痪|不可用)|系统(?:完全)?(?:瘫痪|不可用)/.test(normalized)) pri='P0';
-  else if(/部分功能不可用|明显影响营业/.test(normalized)) pri='P1';
-  else if(/咨询|培训|优化建议/.test(normalized)) pri='P2';
+  var explicitGrades=[];
+  if(/[Pp]\s*0|P零/.test(normalized)) explicitGrades.push('P0');
+  if(/[Pp]\s*1|P一/.test(normalized)) explicitGrades.push('P1');
+  if(/[Pp]\s*2|P二/.test(normalized)) explicitGrades.push('P2');
+  if(explicitGrades.length===1) pri=explicitGrades[0];
+  else if(explicitGrades.length===0){
+    if(/最高优先级|特急|紧急(?!程度)/.test(normalized)) pri='P0';
+    else if(/高优先级|重要|尽快处理/.test(normalized)) pri='P1';
+    else if(/低优先级|普通|一般/.test(normalized)) pri='P2';
+    else if(/无法营业|全店(?:瘫痪|不可用)|系统(?:完全)?(?:瘫痪|不可用)/.test(normalized)) pri='P0';
+    else if(/部分功能不可用|明显影响营业/.test(normalized)) pri='P1';
+    else if(/咨询|培训|优化建议/.test(normalized)) pri='P2';
+  }
 
   var shopMatch=normalized.match(/(?:门店名称|店名|门店)\s*(?:是|为|叫|[:：])?\s*([^，,。；;]{2,40})/);
   if(shopMatch){
@@ -1532,17 +1602,29 @@ function recognizeVoiceText(){
   var currentDesc=document.getElementById('iss-desc');
   var currentPri=document.getElementById('iss-pri');
   var currentDeadline=document.getElementById('iss-deadline');
+  var currentProgress=document.getElementById('iss-progress');
+  var preservedProgress=currentProgress?currentProgress.value:'未开始';
   var parsed=parseVoiceText(text);
-  STATE.editingIssueId=null;
   STATE.voiceParsed={
     shop:parsed.shop||(currentShop?currentShop.value:''),
     desc:parsed.desc||(currentDesc?currentDesc.value:''),
     pri:parsed.pri||(currentPri?currentPri.value:'P2'),
     deadline:parsed.deadline||(currentDeadline?currentDeadline.value:'')
   };
+  STATE.voiceDetected={shop:parsed.shop,desc:parsed.desc,pri:parsed.pri,deadline:parsed.deadline};
   STATE.voiceMissing=parsed.missing;
   STATE.voiceParsedReady=true;
   renderApp();
+  var targetShop=document.getElementById('iss-shop');
+  var targetDesc=document.getElementById('iss-desc');
+  var targetPri=document.getElementById('iss-pri');
+  var targetDeadline=document.getElementById('iss-deadline');
+  var targetProgress=document.getElementById('iss-progress');
+  if(targetShop) targetShop.value=STATE.voiceParsed.shop;
+  if(targetDesc) targetDesc.value=STATE.voiceParsed.desc;
+  if(targetPri) targetPri.value=STATE.voiceParsed.pri;
+  if(targetDeadline) targetDeadline.value=STATE.voiceParsed.deadline;
+  if(targetProgress) targetProgress.value=preservedProgress;
   T(parsed.missing.length?'已填写可识别内容；请确认：'+parsed.missing.join('、'):'文字已识别并填入，请核对后添加');
   if(parsed.missing.length){
     var idMap={'门店名称':'iss-shop','门店问题':'iss-desc','紧急程度':'iss-pri','截止日期':'iss-deadline'};
@@ -1734,7 +1816,14 @@ async function confirmClear(){
   var scopeText=isAdmin?'仅清空当前管理员账号“'+STATE.user.name+'”的个人数据，不会删除其他成员数据。':'将清空当前账号的全部数据。';
   if(!confirm('⚠️ '+scopeText+'\n包括问题、知识库、归档和备注，此操作不可恢复！\n\n确定继续？')) return;
   if(!confirm('再次确认：'+(isAdmin?'清空我的数据（保留团队成员数据）？':'清空当前账号全部数据？'))) return;
+  stopVoiceRecognition(true);
   STATE.data={issues:[],knowledge:[],archives:[],dailySupps:{}};
+  STATE.editingIssueId=null;
+  STATE.voiceText='';
+  STATE.voiceParsed={shop:'',desc:'',pri:'P2',deadline:''};
+  STATE.voiceDetected={shop:'',desc:'',pri:'',deadline:''};
+  STATE.voiceParsedReady=false;
+  STATE.voiceMissing=[];
   var saving=saveUserData();
   renderApp();
   T((await saving)?(isAdmin?'我的数据已清空；团队成员数据已保留':'当前账号数据已清空并同步'):'清空操作未同步，请重试');
@@ -1752,6 +1841,7 @@ document.addEventListener('visibilitychange',function(){
 });
 window.addEventListener('focus',scheduleFocusRefresh);
 window.addEventListener('beforeunload',function(event){
+  stopVoiceRecognition(true);
   if(pendingSaves>0){
     event.preventDefault();
     event.returnValue='';

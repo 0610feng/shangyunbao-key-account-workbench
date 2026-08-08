@@ -161,7 +161,7 @@ body{
 .know-card .kc-domain{font-size:11px;color:var(--primary);font-weight:600;margin-bottom:4px}
 .know-card .kc-title{font-size:14px;font-weight:700;margin-bottom:4px}
 .know-card .kc-code{font-size:11px;color:var(--text3);margin-bottom:4px}
-.know-card .kc-content{font-size:13px;color:var(--text2)}
+.know-card .kc-content{font-size:13px;color:var(--text2);white-space:pre-wrap;overflow-wrap:anywhere}
 
 .daily-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
 .daily-date{font-size:16px;font-weight:700}
@@ -336,6 +336,27 @@ function formatDateTime(value){
   return d.toLocaleString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
 }
 
+// ====== 全员共享的已确认公式（系统内置，只读） ======
+var OFFICIAL_KNOWLEDGE = [
+  {id:'official-calc-01',domain:'台桌与计费',code:'CALC-01',title:'台费分段计算与汇总',content:'【已实测】单段台费＝该段生效计费单价×系统结算分钟数；整单台费＝各计费段台费之和。暂停、恢复或截开后会形成多个计费段，应逐段计算后再汇总。\n【待确认边界】不足1分钟如何取整、暂停时间是否完全排除、体验时长和跳表时长如何计算，尚未完成报表复核。'},
+  {id:'official-calc-02',domain:'台桌与计费',code:'CALC-02',title:'起步价计算及暂停恢复边界',content:'【已验证部分】在配置的起步时长H内，起步项目按固定金额P计费，不按“普通单价×已经过分钟数”计算。例如：30分钟起步价6元，起步项目显示6元。\n【当前版本观察，非正式规则】暂停后恢复时，原起步价项目保留，新计费段按普通台桌单价计算。该表现是正式规则还是系统异常尚未确认，不得作为唯一判断依据。'},
+  {id:'official-calc-03',domain:'营销与会员',code:'CALC-03',title:'商品普通价与会员价计算',content:'【已实测】商品生效单价＝已登录有效会员时使用会员价，未登录会员时使用普通售价；商品金额＝生效单价×数量。结算中退出会员后恢复普通价，再次登录会员后恢复会员价。\n【待确认边界】多会员等级、不同会员卡的价格优先级，以及报表是否将会员价差额计为优惠，尚未验证。'},
+  {id:'official-calc-04',domain:'营销与会员',code:'CALC-04',title:'首N件活动商品金额',content:'【已实测】优惠件数＝购买数量与活动限量N中的较小值；活动后商品金额＝优惠件数×活动价＋超过N的件数×非活动生效单价；商品优惠＝优惠件数×（非活动生效单价－活动价）。首N件按整笔订单累计，截开不会重新获得优惠数量。\n【待确认边界】退款、拆单、合并订单及多个活动同时存在时的限量回补和优先级尚未验证。'},
+  {id:'official-calc-05',domain:'营销与会员',code:'CALC-05',title:'订单低消补差计算',content:'【已实测】低消补差＝max（0，低消门槛－计入低消的项目金额）；最终订单总额＝补差前订单实际金额＋低消补差。系统会把不足部分显示到台费中，达到或超过门槛后补差为0；截开不会重复补足低消。\n【待确认边界】具体计入项目以活动配置为准；按优惠前还是优惠后金额判断低消尚未验证。'},
+  {id:'official-calc-06',domain:'营销与会员',code:'CALC-06',title:'百分比折扣计算及适用范围',content:'【已实测】设折扣率为d，8折时d＝0.8：优惠金额＝适用金额×（1－d）；折后金额＝适用金额×d。活动只计算配置范围内的台桌、商品或计费段；换到不适用台桌后，原适用计费段保留折扣，新计费段不继续打折。\n【待确认边界】多活动叠加顺序和逐项或整单金额取整方式尚未验证。'},
+  {id:'official-calc-07',domain:'财务与分账',code:'CALC-07',title:'订单总额、优惠与应付金额',content:'【已实测】订单总额＝各订单项目按生效价格计算后的金额之和；总优惠＝各类已生效优惠金额之和；未发生退款时，应付金额＝订单总额－总优惠，完成全额支付后订单实收等于应付金额。会员价是商品当时的生效计价价格，不自动重复列为一笔优惠。\n【待确认边界】退款、税费、服务费、部分支付和混合支付不适用本条简式。退款提交申请不等于退款完成，应以审核后的订单、库存和流水为准。'},
+  {id:'official-calc-08',domain:'财务与分账',code:'CALC-08',title:'活动优惠后免台费计算',content:'【已实测】可免台费＝台费计价金额－已经作用于台费的活动优惠；最终应付＝订单总额－活动优惠－免台费金额－其他已验证优惠。免台费不会重复减掉已优惠的台费，也不会冲掉商品优惠；低消补到台费上的金额在本次实测中也可以免除。\n【待确认边界】手动优惠、指定项优惠、抹元抹角等同时存在时的计算顺序尚未验证。'},
+  {id:'official-calc-09',domain:'财务与分账',code:'CALC-09',title:'现金找零与会员卡余额',content:'【已实测】当顾客交付现金大于或等于应收金额时，找零＝交付现金－应收金额，订单记录的实收仍为应收金额，不把顾客交付现金全额记作实收。未发生退款或人工调整时，会员卡期末余额＝期初余额＋充值－会员卡支付；本次实测为20－5.5＝14.5。会员充值不计入营业额和客单数，会员卡支付消费时由消费项目按对应规则统计。\n【待确认边界】现金部分支付、混合支付、退款回卡、余额调整和跨店余额处理尚未验证。'},
+  {id:'official-calc-10',domain:'商品与库存',code:'CALC-10',title:'商品冻结、售出与释放库存',content:'【已实测并经确认】加购未结商品q件时：可售库存减少q、冻结库存增加q；完成支付时：冻结库存减少q、售出数量增加q，可售库存不恢复；清台退回未结商品时：冻结库存减少q、可售库存增加q。\n【待确认边界】后台库存流水字段尚未逐条复核，退款审核通过后的具体回库时点也尚未验证。'},
+  {id:'official-calc-11',domain:'教练与活动',code:'CALC-11',title:'助教费用分段计算',content:'【已实测】助教总费用＝各助教各计费段费用之和；单段助教费＝该段生效助教单价×系统结算时长。例如，两名助教各结算2分钟、单价均为0.01元/分钟时，助教费合计0.04元。暂停、恢复或截开形成多个助教计费段时，应逐段计算后汇总。\n【待确认边界】不足1分钟的取整方式尚未验证；当前“改时长”接受输入但不改变最终时长属于异常，不是正式计费规则。'},
+  {id:'official-calc-12',domain:'教练与活动',code:'CALC-12',title:'点教练台费优惠计算',content:'【已实测】“所有教练时长之和”＝各助教结算时长相加，重叠时间也分别累计；“所有教练时间去重”＝所有助教上课时间区间合并后的总时长，重叠时间只计算一次。时长对应的台费优惠不超过可优惠台费。门槛折扣规则为：有效助教时长达到门槛H时，台费优惠＝可优惠台费×（1－折扣率），未达到门槛时优惠为0；助教费不参与台费折扣。\n【待确认边界】“按单个教练最长时长”尚未实测，不得作为正式结论。'},
+  {id:'official-warn-01',domain:'财务与分账',code:'WARN-01',title:'营业额完整口径待专项实测',content:'【重要：本条不是计算公式】目前只确认：会员充值是独立充值流水，不计入营业额和客单数；会员卡余额用于支付消费订单时，消费项目才按相应规则进入营业统计。退款审核完成后的冲减方式、混合支付、钱箱、备用金及完整班次统计尚未闭环验证。因此不得把“营业额＝商品销售总额－退款金额”作为正式规则，完整公式须在专项实测后补充。'}
+];
+
+function isDeprecatedKnowledgeSample(item){
+  return !!item&&item._sample===true&&item.code==='B107-B119'&&item.title==='营业额计算公式';
+}
+
 // ====== Supabase 云端认证与数据层 ======
 var CLOUD_CONFIG = window.WORKBENCH_CONFIG || {};
 var db = (window.supabase && CLOUD_CONFIG.supabaseUrl && CLOUD_CONFIG.supabaseAnonKey)
@@ -387,7 +408,8 @@ function normalizeUserData(d){
     });
     if(candidates.length===1){item.sourceIssueId=candidates[0].id;linkedIssueIds[String(candidates[0].id)]=true}
   });
-  return {issues:issues,knowledge:Array.isArray(d.knowledge)?d.knowledge:[],archives:archives,dailySupps:d.dailySupps&&typeof d.dailySupps==='object'?d.dailySupps:{}};
+  var knowledge=Array.isArray(d.knowledge)?d.knowledge.filter(function(item){return item&&typeof item==='object'&&!isDeprecatedKnowledgeSample(item)}):[];
+  return {issues:issues,knowledge:knowledge,archives:archives,dailySupps:d.dailySupps&&typeof d.dailySupps==='object'?d.dailySupps:{}};
 }
 function jsonEqual(a,b){
   try{return JSON.stringify(a)===JSON.stringify(b)}catch(e){return false}
@@ -1107,7 +1129,6 @@ function getSampleData(){
     {id:gid(),shopName:'华北区-北京朝阳店',shopDesc:'分账设置中供应商账户信息错误导致自动分账失败',priority:'P0',deadline:tsOffset(1),progress:'阶段性完成',createdAt:tsOffset(-3),_sample:true},
     {id:gid(),shopName:'西南区-成都天府店',shopDesc:'会员等级积分计算与营销中心配置不一致',priority:'P2',deadline:tsOffset(7),progress:'未开始',createdAt:ts(),_sample:true}
   ],knowledge:[
-    {id:gid(),domain:'财务与分账',code:'B107-B119',title:'营业额计算公式',content:'营业额=商品销售总额-退款金额。不含优惠券和积分抵扣部分。',_sample:true},
     {id:gid(),domain:'商品与库存',code:'B023-B030',title:'库存流转规则',content:'总部仓库出货→门店在途（24h内确认）→门店在库。超24h未确认自动标记异常。',_sample:true},
     {id:gid(),domain:'营销与会员',code:'B032-B042',title:'积分计算规则',content:'消费1元=1积分，退款扣回。等级升降周期为自然月。',_sample:true}
   ],archives:[],dailySupps:{}}
@@ -2529,7 +2550,7 @@ async function saveDailySupp(){
 function renderKnowledge(){
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.book+'</span> 知识库速查</div>';
   h+='<div class="search-box">'+I.search+
-    '<input type="text" placeholder="搜索业务规则、编码、知识域..." id="kw-search" value="'+escAttr(STATE.knowledgeQuery||'')+'" oninput="STATE.knowledgeQuery=this.value;renderApp()"></div>';
+    '<input type="text" placeholder="搜索业务规则、编码、知识域..." id="kw-search" value="'+escAttr(STATE.knowledgeQuery||'')+'" oninput="updateKnowledgeSearch(this.value)"></div>';
 
   // Add form
   h+='<div class="card" style="border-style:dashed">';
@@ -2544,12 +2565,40 @@ function renderKnowledge(){
   // List
   var query=String(STATE.knowledgeQuery||'').trim().toLowerCase();
   function matchesKnowledge(k){
-    return !query||(k.domain||'').toLowerCase().indexOf(query)>=0||
-      (k.code||'').toLowerCase().indexOf(query)>=0||
-      (k.title||'').toLowerCase().indexOf(query)>=0||
-      (k.content||'').toLowerCase().indexOf(query)>=0||
-      (k._fromMember||'').toLowerCase().indexOf(query)>=0||
-      (k._fromDept||'').toLowerCase().indexOf(query)>=0;
+    return !query||String(k.domain||'').toLowerCase().indexOf(query)>=0||
+      String(k.code||'').toLowerCase().indexOf(query)>=0||
+      String(k.title||'').toLowerCase().indexOf(query)>=0||
+      String(k.content||'').toLowerCase().indexOf(query)>=0||
+      String(k._fromMember||'').toLowerCase().indexOf(query)>=0||
+      String(k._fromDept||'').toLowerCase().indexOf(query)>=0;
+  }
+  var officialFormulas=OFFICIAL_KNOWLEDGE.filter(function(k){return k.code.indexOf('CALC-')===0}).filter(matchesKnowledge);
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:14px 0 8px"><span style="font-weight:700;font-size:14px">已确认计算公式（'+officialFormulas.length+'）</span><span style="font-size:11px;color:var(--text3)">系统内置 · 全员可见 · 只读</span></div>';
+  if(officialFormulas.length===0){
+    h+='<div class="empty">已确认公式中无匹配结果</div>';
+  }else{
+    for(var oi=0;oi<officialFormulas.length;oi++){
+      var officialItem=officialFormulas[oi];
+      h+='<div class="know-card" style="border-left:3px solid var(--success)">';
+      h+='<div class="kc-domain">'+esc(officialItem.domain||'未分类')+' <span class="kc-code">'+esc(officialItem.code||'')+'</span></div>';
+      h+='<div class="kc-title">'+esc(officialItem.title||'')+'</div>';
+      h+='<div class="kc-content">'+esc(officialItem.content||'')+'</div>';
+      h+='<div style="font-size:11px;color:var(--success);margin-top:8px">官方速查 · 只读</div></div>';
+    }
+  }
+  var officialWarnings=OFFICIAL_KNOWLEDGE.filter(function(k){return k.code.indexOf('WARN-')===0}).filter(matchesKnowledge);
+  h+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin:18px 0 8px"><span style="font-weight:700;font-size:14px">重要口径提示（'+officialWarnings.length+'）</span><span style="font-size:11px;color:var(--text3)">未完成验证 · 禁止当作公式</span></div>';
+  if(officialWarnings.length===0){
+    h+='<div class="empty">重要口径提示中无匹配结果</div>';
+  }else{
+    for(var wi=0;wi<officialWarnings.length;wi++){
+      var warningItem=officialWarnings[wi];
+      h+='<div class="know-card" style="border-left:3px solid var(--warning)">';
+      h+='<div class="kc-domain">'+esc(warningItem.domain||'未分类')+' <span class="kc-code">'+esc(warningItem.code||'')+'</span></div>';
+      h+='<div class="kc-title">'+esc(warningItem.title||'')+'</div>';
+      h+='<div class="kc-content">'+esc(warningItem.content||'')+'</div>';
+      h+='<div style="font-size:11px;color:var(--warning);margin-top:8px">待专项实测 · 只读</div></div>';
+    }
   }
   var list=STATE.data.knowledge.slice();
   list=list.filter(matchesKnowledge);
@@ -2584,6 +2633,14 @@ function renderKnowledge(){
     }
   }
   return h;
+}
+function updateKnowledgeSearch(value){
+  STATE.knowledgeQuery=value;
+  renderApp();
+  var input=document.getElementById('kw-search');
+  if(!input)return;
+  input.focus();
+  try{input.setSelectionRange(input.value.length,input.value.length)}catch(e){}
 }
 async function addKnowledge(){
   var dom=document.getElementById('kw-domain').value.trim();

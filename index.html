@@ -625,11 +625,50 @@ async function requestWorkbookSync(reason,context){
   setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
   return {ok:false,status:'pending',workbookSynced:false,pending:true,error:lastDetails&&lastDetails.error||lastDetails,details:lastDetails,requestId:clientRequestId,attempts:attempts};
 }
+function legacyWorkbookDrainBlockers(){
+  var data=STATE&&STATE.data||{};
+  var issues=Array.isArray(data.issues)?data.issues:[];
+  var archives=Array.isArray(data.archives)?data.archives:[];
+  var archiveByIssue={};
+  archives.forEach(function(item){
+    if(!item||typeof item!=='object')return;
+    var id=String(item.sourceIssueId||item.id||'').trim();
+    if(id)archiveByIssue[id]=item;
+  });
+  var seen={};
+  var blockers=[];
+  function inspect(issue,archive){
+    issue=issue&&typeof issue==='object'?issue:{};
+    archive=archive&&typeof archive==='object'?archive:{};
+    var id=String(issue.id||archive.sourceIssueId||archive.id||'').trim();
+    if(!id||seen[id])return;
+    seen[id]=true;
+    var ticketNo=String(issue.ticketNo||archive.ticketNo||'').trim();
+    var assigneeName=normalizeAssigneeName(issue.assigneeName||archive.assigneeName||'');
+    var missing=[];
+    if(!/^\d{11}$/.test(ticketNo))missing.push('ticketNo');
+    if(!isValidExcelAssignee(assigneeName))missing.push('assigneeName');
+    if(missing.length)blockers.push({issueId:id,missing:missing});
+  }
+  issues.forEach(function(issue){
+    var id=String(issue&&issue.id||'').trim();
+    inspect(issue,archiveByIssue[id]);
+  });
+  archives.forEach(function(archive){inspect(null,archive)});
+  return blockers;
+}
 async function triggerWorkbookSyncCompensation(){
   if(CLOUD_CONFIG.workbookSyncEnabled!==true||!STATE.user)return {ok:true,skipped:true,status:'disabled'};
   var userId=String(STATE.user.userId||'');
   if(!userId||workbookCompensationUserId===userId)return {ok:true,skipped:true,status:'already_attempted'};
   workbookCompensationUserId=userId;
+  // 旧版记录没有新表所需的编号或跟进人时，整用户 drain 必然被后端拒绝。
+  // 这里仅跳过登录补偿，不影响新增、编辑、跟进的单工单直写；也不删除旧数据或 outbox。
+  var legacyBlockers=legacyWorkbookDrainBlockers();
+  if(legacyBlockers.length){
+    setCloudStatus('业务云端已加载；'+legacyBlockers.length+'条旧工单待迁移，新工单联动正常','var(--warning)');
+    return {ok:true,skipped:true,status:'legacy_contract_incomplete',pending:false,workbookSynced:false,legacyBlockers:legacyBlockers.length};
+  }
   var result=await requestWorkbookSync('session_sync_compensation',{
     mode:'drain',ownerUserId:userId,requestId:'drain:'+userId+':'+gid()
   });

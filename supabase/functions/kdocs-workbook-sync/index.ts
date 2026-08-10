@@ -56,6 +56,10 @@ function trimmed(value: unknown): string {
   return text(value).trim();
 }
 
+function issueScopeKey(ownerUserId: unknown, issueId: unknown): string {
+  return `${trimmed(ownerUserId)}:${trimmed(issueId)}`;
+}
+
 function env(name: string): string {
   const value = Deno.env.get(name)?.trim() ?? "";
   if (!value) throw new IntegrationError(503, "MISSING_SERVER_CONFIGURATION", `服务端缺少环境变量 ${name}`);
@@ -135,6 +139,11 @@ function normalizeFollowUp(
   const followerName = trimmed(raw.followerName || raw.authorName || ticket.assigneeName);
   const content = text(raw.content);
   const status = normalizeFollowStatus(raw.status || raw.toProgress);
+  const sourceDailyRowText = trimmed(raw.sourceDailyRow);
+  const sourceDailyRow = sourceDailyRowText ? Number(sourceDailyRowText) : undefined;
+  const sourceFollowUpStatus = Object.prototype.hasOwnProperty.call(raw, "sourceFollowUpStatus")
+    ? text(raw.sourceFollowUpStatus)
+    : undefined;
 
   return {
     id: followUpId,
@@ -153,6 +162,8 @@ function normalizeFollowUp(
     authorId: trimmed(raw.authorId || followerId),
     authorName: trimmed(raw.authorName || followerName),
     createdAt: trimmed(raw.createdAt || followedAt),
+    ...(sourceDailyRow === undefined ? {} : { sourceDailyRow }),
+    ...(sourceFollowUpStatus === undefined ? {} : { sourceFollowUpStatus }),
   };
 }
 
@@ -279,6 +290,12 @@ function normalizeTicket(
     if (!EXCEL_ASSIGNEES.has(trimmed(followUp.followerName))) {
       throw new IntegrationError(409, "FOLLOWER_NOT_IN_WORKBOOK_LIST", `工单 ${ticketNo} 的跟进记录包含不在表格名单中的跟进人`);
     }
+    if (followUp.sourceDailyRow !== undefined) {
+      const sourceDailyRow = Number(followUp.sourceDailyRow);
+      if (!Number.isInteger(sourceDailyRow) || sourceDailyRow < 6 || sourceDailyRow > 2005) {
+        throw new IntegrationError(409, "INVALID_SOURCE_DAILY_ROW", `工单 ${ticketNo} 的历史跟进行号必须在 6-2005 之间`);
+      }
+    }
   }
 
   let currentStatus = "未跟进";
@@ -322,7 +339,7 @@ function normalizeTicket(
 function collectWorkbookPayload(
   rows: WorkbenchRow[],
   profiles: Map<string, ProfileRow>,
-  targetIssueId: string,
+  targetIssueKeys: Set<string> | null,
 ): { tickets: JsonRecord[]; followups: JsonRecord[] } {
   const tickets: JsonRecord[] = [];
   const followups: JsonRecord[] = [];
@@ -344,7 +361,7 @@ function collectWorkbookPayload(
 
     for (const issue of issues) {
       const id = trimmed(issue.id);
-      if (!id || (targetIssueId && id !== targetIssueId)) continue;
+      if (!id || (targetIssueKeys && !targetIssueKeys.has(issueScopeKey(row.user_id, id)))) continue;
       issueIds.add(id);
       const normalized = normalizeTicket(issue, archiveBySource.get(id), owner);
       const ticketNo = trimmed(normalized.ticket.ticketNo);
@@ -362,7 +379,7 @@ function collectWorkbookPayload(
     // 兼容未来“完结后仅保留归档”的数据形态；当前工作台通常仍保留 issues。
     for (const archive of archives) {
       const id = trimmed(archive.sourceIssueId || archive.id);
-      if (!id || issueIds.has(id) || (targetIssueId && id !== targetIssueId)) continue;
+      if (!id || issueIds.has(id) || (targetIssueKeys && !targetIssueKeys.has(issueScopeKey(row.user_id, id)))) continue;
       const normalized = normalizeTicket({}, archive, owner);
       const ticketNo = trimmed(normalized.ticket.ticketNo);
       if (ticketNos.has(ticketNo)) throw new IntegrationError(409, "DUPLICATE_TICKET_NO", `检测到重复工单编号 ${ticketNo}`);
@@ -377,8 +394,12 @@ function collectWorkbookPayload(
     }
   }
 
-  if (targetIssueId && !tickets.length) {
-    throw new IntegrationError(404, "ISSUE_NOT_FOUND", "未找到本次需要同步的工单");
+  if (targetIssueKeys && targetIssueKeys.size) {
+    const found = new Set(tickets.map((ticket) => issueScopeKey(ticket.ownerUserId, ticket.id)));
+    const missing = [...targetIssueKeys].filter((key) => !found.has(key));
+    if (missing.length) {
+      throw new IntegrationError(404, "ISSUE_NOT_FOUND", `未找到 ${missing.length} 张本次需要同步的工单`);
+    }
   }
   tickets.sort((a, b) => trimmed(a.ticketNo).localeCompare(trimmed(b.ticketNo)));
   followups.sort((a, b) => {
@@ -406,19 +427,76 @@ async function fetchRows(
   return { rows: (dataResult.data ?? []) as WorkbenchRow[], profiles };
 }
 
-function buildOutboxEntries(rows: WorkbenchRow[], targetIssueId: string): JsonRecord[] {
-  return rows.map((row) => {
-    const revision = trimmed(row.updated_at);
-    if (!isValidDateLike(revision)) {
-      throw new IntegrationError(500, "WORKBENCH_REVISION_INVALID", `账号 ${row.user_id} 缺少可核验的数据版本`);
-    }
-    return {
-      ownerUserId: row.user_id,
-      // 空 issueId 表示本次已经核验并同步该 owner 截止 revision 的全部工单。
-      issueId: targetIssueId,
-      revision,
-    };
+async function fetchPendingOutbox(
+  service: SupabaseClient,
+  ownerUserIds: string[] | null,
+  targetIssueId: string,
+): Promise<{ entries: JsonRecord[]; deletions: JsonRecord[]; upsertIssueKeys: Set<string> }> {
+  const result = await service.rpc("list_workbook_sync_outbox", {
+    p_owner_user_ids: ownerUserIds,
+    p_issue_id: targetIssueId || null,
   });
+  if (result.error) throw new IntegrationError(500, "OUTBOX_READ_FAILED", result.error.message);
+  if (!Array.isArray(result.data)) throw new IntegrationError(500, "OUTBOX_READ_INVALID", "同步待办队列返回格式无效");
+
+  const entries: JsonRecord[] = [];
+  const deletions: JsonRecord[] = [];
+  const upsertIssueKeys = new Set<string>();
+  const seen = new Set<string>();
+  result.data.forEach((raw) => {
+    const row = record(raw);
+    const ownerUserId = trimmed(row.owner_user_id || row.ownerUserId);
+    const issueId = trimmed(row.issue_id || row.issueId);
+    const ticketNo = trimmed(row.ticket_no || row.ticketNo);
+    const revision = trimmed(row.pending_revision || row.revision);
+    const deletedAt = trimmed(row.deleted_at || row.deletedAt);
+    const operationRaw = trimmed(row.operation);
+    const operation = operationRaw === "deleted" ? "delete" : operationRaw;
+    if (!ownerUserId || !issueId || !isValidDateLike(revision)) {
+      throw new IntegrationError(500, "OUTBOX_ENTRY_INVALID", "同步待办缺少账号、工单ID或有效版本");
+    }
+    const key = issueScopeKey(ownerUserId, issueId);
+    if (seen.has(key)) throw new IntegrationError(500, "OUTBOX_ENTRY_DUPLICATED", `同步待办重复：${key}`);
+    seen.add(key);
+    if (operation !== "upsert" && operation !== "delete") {
+      throw new IntegrationError(500, "OUTBOX_OPERATION_INVALID", `工单 ${issueId} 的同步操作无效`);
+    }
+    if (operation === "delete") {
+      validateTicketNo(ticketNo, issueId);
+      deletions.push({ issueId, ticketNo, ownerUserId, deletedAt: deletedAt || revision });
+    } else {
+      upsertIssueKeys.add(key);
+    }
+    entries.push({ ownerUserId, issueId, revision, operation, ticketNo });
+  });
+  deletions.sort((a, b) => trimmed(a.ticketNo).localeCompare(trimmed(b.ticketNo)));
+  return { entries, deletions, upsertIssueKeys };
+}
+
+async function fetchClearedDeletionTombstone(
+  service: SupabaseClient,
+  ownerUserId: string,
+  issueId: string,
+): Promise<JsonRecord | null> {
+  const result = await service
+    .from("ticket_deletion_tombstones")
+    .select("owner_user_id,issue_id,ticket_no,workbook_status,workbook_cleared_at")
+    .eq("owner_user_id", ownerUserId)
+    .eq("issue_id", issueId)
+    .maybeSingle();
+  if (result.error) {
+    throw new IntegrationError(500, "DELETE_TOMBSTONE_READ_FAILED", result.error.message);
+  }
+  const tombstone = result.data ? record(result.data) : null;
+  if (!tombstone || trimmed(tombstone.workbook_status) !== "cleared") return null;
+  const ticketNo = trimmed(tombstone.ticket_no);
+  validateTicketNo(ticketNo, issueId);
+  return {
+    ownerUserId: trimmed(tombstone.owner_user_id),
+    issueId: trimmed(tombstone.issue_id),
+    ticketNo,
+    workbookClearedAt: trimmed(tombstone.workbook_cleared_at),
+  };
 }
 
 async function assertTicketNumberAllocations(
@@ -469,7 +547,7 @@ async function finishOutbox(
 async function backfillMissingTicketNumbers(
   service: SupabaseClient,
   rows: WorkbenchRow[],
-  targetIssueId: string,
+  targetIssueKeys: Set<string> | null,
 ): Promise<number> {
   const allowBackfill = booleanEnv("KDOCS_ALLOW_TICKET_BACKFILL");
   let backfilled = 0;
@@ -505,7 +583,7 @@ async function backfillMissingTicketNumbers(
     });
 
     for (const candidate of candidates) {
-      if (!candidate.id || (targetIssueId && candidate.id !== targetIssueId)) continue;
+      if (!candidate.id || (targetIssueKeys && !targetIssueKeys.has(issueScopeKey(row.user_id, candidate.id)))) continue;
       if (candidate.ticketNo) {
         validateTicketNo(candidate.ticketNo, candidate.id);
         if (candidate.needsExistingNumberPatch) {
@@ -614,6 +692,15 @@ async function callWpsAirScript(payload: JsonRecord): Promise<JsonRecord> {
   throw new IntegrationError(502, "WPS_REQUEST_FAILED", lastError instanceof Error ? lastError.message : "WPS AirScript 请求失败");
 }
 
+function assertWpsDeletionVerification(result: JsonRecord, expected: number): void {
+  if (!expected) return;
+  const received = Number(result.deletionsReceived);
+  const verified = Number(result.deletionsVerified);
+  if (!Number.isInteger(received) || !Number.isInteger(verified) || received !== expected || verified !== expected) {
+    throw new IntegrationError(502, "WPS_DELETE_VERIFICATION_INCOMPLETE", `WPS仅确认清除 ${verified || 0}/${expected} 张工单`);
+  }
+}
+
 function allowedOrigins(): Set<string> {
   return new Set((Deno.env.get("WORKBENCH_ALLOWED_ORIGINS") ?? "")
     .split(",").map((item) => item.trim()).filter(Boolean));
@@ -685,6 +772,8 @@ Deno.serve(async (request: Request) => {
     const issueId = trimmed(body.issueId);
     const ownerUserId = trimmed(body.ownerUserId) || callerId;
     const fullMode = requestedMode === "full";
+    const drainMode = requestedMode === "drain" || requestedMode === "drain_deletions";
+    const deletionDrainOnly = requestedMode === "drain_deletions";
     const userFullSync = body.fullSync === true;
     const force = body.force === true;
     if ((fullMode || force) && caller.role !== "admin") {
@@ -696,49 +785,102 @@ Deno.serve(async (request: Request) => {
 
     const clientReason = trimmed(body.reason);
     const targetIssueId = userFullSync || fullMode ? "" : issueId;
-    const mode = fullMode ? "full" : (targetIssueId ? "incremental" : "user");
+    const mode = fullMode ? "full" : (userFullSync ? "user_full" : (targetIssueId ? "incremental" : (deletionDrainOnly ? "delete_drain" : "drain")));
     const ownerFilter = fullMode ? null : [ownerUserId];
-    let fetched = await fetchRows(service, ownerFilter);
-    outboxEntries = buildOutboxEntries(fetched.rows, targetIssueId);
+    const pending = await fetchPendingOutbox(service, ownerFilter, targetIssueId);
+    let selectedDeletions = pending.deletions;
+    let selectedUpsertKeys = pending.upsertIssueKeys;
+    let selectedEntries = pending.entries;
 
-    if (clientReason === "issue_deleted") {
-      if (!targetIssueId) throw new IntegrationError(400, "ISSUE_ID_REQUIRED", "删除同步必须包含工单内部ID");
+    // 登录/定时补偿时优先处理删除，避免旧工单字段不完整阻塞“表格补删”。
+    // 其余 upsert 待办仍保留，下一轮 drain 再处理。
+    if (deletionDrainOnly || (drainMode && selectedDeletions.length)) {
+      selectedEntries = pending.entries.filter((entry) => trimmed(entry.operation) === "delete");
+      selectedUpsertKeys = new Set<string>();
+      if (deletionDrainOnly) selectedDeletions = pending.deletions;
+    }
+    outboxEntries = selectedEntries;
+
+    if (drainMode && !selectedEntries.length) {
+      return jsonResponse(request, 200, {
+        ok: true,
+        status: "unchanged",
+        mode,
+        requestId: trimmed(body.requestId) || undefined,
+        tickets: 0,
+        followups: 0,
+        deletions: 0,
+        verifiedAllocations: 0,
+      });
+    }
+
+    let fetched = await fetchRows(service, ownerFilter);
+
+    let targetIssueKeys: Set<string> | null = null;
+    if (drainMode) {
+      targetIssueKeys = selectedUpsertKeys;
+    } else if (!fullMode && !userFullSync && targetIssueId) {
+      targetIssueKeys = selectedDeletions.length
+        ? new Set<string>()
+        : new Set([issueScopeKey(ownerUserId, targetIssueId)]);
+    }
+    if (clientReason === "issue_deleted" && !targetIssueId) {
+      throw new IntegrationError(400, "ISSUE_ID_REQUIRED", "删除同步必须包含工单内部ID");
+    }
+    if (clientReason === "issue_deleted" && targetIssueId && !selectedDeletions.length) {
       const ticketStillExists = fetched.rows.some((row) => {
         const payload = record(row.payload);
         return array(payload.issues).some((issue) => trimmed(issue.id) === targetIssueId)
           || array(payload.archives).some((archive) => trimmed(archive.sourceIssueId || archive.id) === targetIssueId);
       });
       if (!ticketStillExists) {
-        // Excel 是不可删改的历史账本。删除已被“保留历史”策略消费，成功清除该工单 outbox；
-        // 若工单已被并发重建，或仍有完整归档，则不会走这里，而会按当前最新版本正常 upsert。
-        await finishOutbox(service, outboxEntries, true);
-        outboxFinished = true;
-        return jsonResponse(request, 200, {
-          ok: true,
-          status: "skipped",
-          mode: "incremental",
-          reason: "spreadsheet_history_preserved",
-          requestId: trimmed(body.requestId) || undefined,
-        });
+        // 两个窗口同时删除同一工单时，后到请求可能在首个请求成功后才读取 outbox。
+        // 永久墓碑已标记 cleared 即代表 WPS 回读完成，按幂等成功返回，不能误报失败。
+        const clearedTombstone = await fetchClearedDeletionTombstone(service, ownerUserId, targetIssueId);
+        if (clearedTombstone) {
+          const verifiedAllocations = await assertTicketNumberAllocations(service, [{
+            id: clearedTombstone.issueId,
+            ticketNo: clearedTombstone.ticketNo,
+            ownerUserId: clearedTombstone.ownerUserId,
+          }]);
+          return jsonResponse(request, 200, {
+            ok: true,
+            status: "unchanged",
+            mode,
+            requestId: trimmed(body.requestId) || undefined,
+            tickets: 0,
+            followups: 0,
+            deletions: 1,
+            verifiedAllocations,
+            tombstoneStatus: "cleared",
+            workbookClearedAt: clearedTombstone.workbookClearedAt || undefined,
+          });
+        }
+        throw new IntegrationError(409, "DELETE_TOMBSTONE_NOT_FOUND", "删除凭证尚未生成，表格补删任务已保留，请稍后重试");
       }
     }
 
-    const backfilled = await backfillMissingTicketNumbers(service, fetched.rows, targetIssueId);
+    const backfilled = await backfillMissingTicketNumbers(service, fetched.rows, targetIssueKeys);
     if (backfilled) {
       fetched = await fetchRows(service, ownerFilter);
-      outboxEntries = buildOutboxEntries(fetched.rows, targetIssueId);
     }
-    const normalized = collectWorkbookPayload(fetched.rows, fetched.profiles, targetIssueId);
-    const verifiedAllocations = await assertTicketNumberAllocations(service, normalized.tickets);
+    const normalized = collectWorkbookPayload(fetched.rows, fetched.profiles, targetIssueKeys);
+    const allocationAssertions = normalized.tickets.concat(selectedDeletions.map((deletion) => ({
+      id: deletion.issueId,
+      ticketNo: deletion.ticketNo,
+      ownerUserId: deletion.ownerUserId,
+    })));
+    const verifiedAllocations = await assertTicketNumberAllocations(service, allocationAssertions);
 
     const syncData: JsonRecord = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       mode,
       tickets: normalized.tickets,
       followups: normalized.followups,
+      deletions: selectedDeletions,
     };
     payloadHash = await sha256(syncData);
-    scopeKey = fullMode ? "team:full" : (targetIssueId ? `issue:${ownerUserId}:${targetIssueId}` : `user:${ownerUserId}`);
+    scopeKey = fullMode ? "team:full" : (targetIssueId ? `issue:${ownerUserId}:${targetIssueId}` : (deletionDrainOnly ? `user:${ownerUserId}:deletions` : `user:${ownerUserId}`));
     requestId = crypto.randomUUID();
     const clientRequestId = trimmed(body.requestId).slice(0, 300);
     const reason = clientReason.slice(0, 300);
@@ -772,13 +914,14 @@ Deno.serve(async (request: Request) => {
       outboxFinished = true;
       return jsonResponse(request, 200, {
         ok: true, status: "unchanged", mode, requestId, tickets: normalized.tickets.length,
-        followups: normalized.followups.length, backfilled, verifiedAllocations,
+        followups: normalized.followups.length, deletions: selectedDeletions.length, backfilled, verifiedAllocations,
       });
     }
     if (claimState !== "claimed") {
       return jsonResponse(request, 202, {
         ok: true, status: "busy", mode, requestId, retryAfterSeconds: 5,
-        tickets: normalized.tickets.length, followups: normalized.followups.length, backfilled, verifiedAllocations,
+        tickets: normalized.tickets.length, followups: normalized.followups.length,
+        deletions: selectedDeletions.length, backfilled, verifiedAllocations,
       });
     }
     claimed = true;
@@ -788,6 +931,7 @@ Deno.serve(async (request: Request) => {
       requestId,
       generatedAt: new Date().toISOString(),
     });
+    assertWpsDeletionVerification(airScriptResult, selectedDeletions.length);
     await finishOutbox(service, outboxEntries, true);
     outboxFinished = true;
     const finish = await service.rpc("finish_workbook_sync", {
@@ -808,6 +952,7 @@ Deno.serve(async (request: Request) => {
       requestId,
       tickets: normalized.tickets.length,
       followups: normalized.followups.length,
+      deletions: selectedDeletions.length,
       backfilled,
       verifiedAllocations,
       workbook: airScriptResult,

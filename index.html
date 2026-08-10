@@ -523,6 +523,7 @@ var syncPollTimer = null;
 var focusRefreshTimer = null;
 var isRefreshingCloud = false;
 var workbookCompensationUserId = '';
+var workbookDeletionRetryTimer = null;
 var cloudBaseline = {issues:[],knowledge:[],archives:[],dailySupps:{}};
 var cloudRevision = '';
 var pendingHistoryOps = {};
@@ -565,10 +566,10 @@ function workbookSyncDelay(ms){return new Promise(function(resolve){setTimeout(r
 function businessWorkbookMessage(action,saveResult){
   var sync=saveResult&&saveResult.workbookSync;
   var text=action+'；业务云端已保存';
-  if(sync&&sync.historyPreserved)return text+'，Excel历史表按规则保留';
+  if(sync&&sync.deletionSynced)return text+'，WPS表格已同步清除（保留空行与公式，工单号不回收）';
   if(sync&&sync.workbookSynced)return text+'，Excel表已同步';
   if(sync&&sync.skipped&&!sync.pending)return text+'，Excel表联动暂未启用';
-  return text+'，Excel表待补同步';
+  return text+'，WPS表格将在后台自动补同步';
 }
 async function requestWorkbookSync(reason,context){
   context=context||{};
@@ -594,9 +595,9 @@ async function requestWorkbookSync(reason,context){
         break;
       }
       var status=String(data.status||'');
-      var preservedDelete=status==='skipped'&&data.reason==='spreadsheet_history_preserved'&&body.reason==='issue_deleted';
-      if(data.ok===true&&(status==='succeeded'||status==='unchanged'||preservedDelete)){
-        return {ok:true,data:data,status:status,workbookSynced:true,pending:false,historyPreserved:preservedDelete,requestId:clientRequestId,attempts:attempt+1};
+      if(data.ok===true&&(status==='succeeded'||status==='unchanged')){
+        var deletionSynced=Number(data.deletions||0)>0;
+        return {ok:true,data:data,status:status,workbookSynced:true,deletionSynced:deletionSynced,pending:false,requestId:clientRequestId,attempts:attempt+1};
       }
       if(status==='busy'){
         lastDetails={status:202,code:'SYNC_BUSY',message:'表格同步队列持续繁忙'};
@@ -662,19 +663,31 @@ async function triggerWorkbookSyncCompensation(){
   var userId=String(STATE.user.userId||'');
   if(!userId||workbookCompensationUserId===userId)return {ok:true,skipped:true,status:'already_attempted'};
   workbookCompensationUserId=userId;
-  // 旧版记录没有新表所需的编号或跟进人时，整用户 drain 必然被后端拒绝。
-  // 这里仅跳过登录补偿，不影响新增、编辑、跟进的单工单直写；也不删除旧数据或 outbox。
+  // 有旧版字段缺口时只补“删除待办”，避免旧数据阻塞表格清除；
+  // 没有缺口时再正常处理全部待同步工单。
   var legacyBlockers=legacyWorkbookDrainBlockers();
-  if(legacyBlockers.length){
-    setCloudStatus('业务云端已加载；'+legacyBlockers.length+'条旧工单待迁移，新工单联动正常','var(--warning)');
-    return {ok:true,skipped:true,status:'legacy_contract_incomplete',pending:false,workbookSynced:false,legacyBlockers:legacyBlockers.length};
-  }
   var result=await requestWorkbookSync('session_sync_compensation',{
-    mode:'drain',ownerUserId:userId,requestId:'drain:'+userId+':'+gid()
+    mode:legacyBlockers.length?'drain_deletions':'drain',ownerUserId:userId,requestId:'drain:'+userId+':'+gid()
   });
-  if(result.workbookSynced)setCloudStatus('业务云端已加载，Excel表已核对','var(--success)');
+  if(legacyBlockers.length){
+    setCloudStatus('业务云端已加载；'+legacyBlockers.length+'条旧工单待迁移，删除补偿已核对','var(--warning)');
+    result.legacyBlockers=legacyBlockers.length;
+    result.pending=!!result.pending;
+    if(!result.deletionSynced)result.status='legacy_contract_incomplete';
+  }else if(result.workbookSynced)setCloudStatus('业务云端已加载，Excel表已核对','var(--success)');
   else if(result.pending)setCloudStatus('业务云端已加载，Excel表待补同步','var(--warning)');
   return result;
+}
+
+function scheduleWorkbookDeletionRetry(ownerUserId,delayMs){
+  if(workbookDeletionRetryTimer||!ownerUserId)return;
+  workbookDeletionRetryTimer=setTimeout(async function(){
+    workbookDeletionRetryTimer=null;
+    if(!STATE.user||String(STATE.user.userId)!==String(ownerUserId))return;
+    var result=await requestWorkbookSync('deletion_retry',{mode:'drain_deletions',ownerUserId:String(ownerUserId),requestId:'delete-retry:'+String(ownerUserId)+':'+gid()});
+    if(result.pending)scheduleWorkbookDeletionRetry(ownerUserId,Math.min(300000,Math.max(30000,Number(delayMs||30000)*2)));
+    else if(result.deletionSynced)setCloudStatus('业务云端已删除，WPS表格已自动补删','var(--success)');
+  },Math.max(15000,Number(delayMs)||30000));
 }
 
 function emptyUserData(){return {issues:[],knowledge:[],archives:[],dailySupps:{}}}
@@ -1025,7 +1038,8 @@ function saveUserData(syncContext){
     if(workbookRequest){
       setCloudStatus('业务云端已保存，正在同步Excel表…','var(--warning)');
       workbookSync=await requestWorkbookSync(workbookRequest.reason||'workbench_data_saved',Object.assign({},workbookRequest,{revision:saved.updated_at||''}));
-      if(workbookSync.workbookSynced)setCloudStatus('业务云端已保存，Excel表已同步','var(--success)');
+      if(workbookSync.deletionSynced)setCloudStatus('业务云端已删除，WPS表格已同步清除','var(--success)');
+      else if(workbookSync.workbookSynced)setCloudStatus('业务云端已保存，Excel表已同步','var(--success)');
       else if(workbookSync.skipped&&!workbookSync.pending)setCloudStatus('业务云端已保存，Excel表联动暂未启用','var(--warning)');
       else setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
     }
@@ -1653,6 +1667,7 @@ async function doLogout(){
   STATE.knowledgeQuery='';
   pendingHistoryOps={};
   workbookCompensationUserId='';
+  if(workbookDeletionRetryTimer){clearTimeout(workbookDeletionRetryTimer);workbookDeletionRetryTimer=null}
   STATE.voiceText='';
   STATE.voiceParsed={shop:'',desc:'',pri:'普通',deadline:''};
   STATE.voiceDetected={shop:'',desc:'',pri:'',deadline:''};
@@ -2611,7 +2626,7 @@ async function changeProgress(id, prog, ownerUserId){
 }
 async function deleteIssue(id){
   if(!canStartMutation())return;
-  if(!confirm('确定删除此工单？')) return;
+  if(!confirm('确定删除此工单？\n\n删除后：\n1. 工单会从客户台、驾驶舱及各业务分表中消失；\n2. WPS表格不会删除整行，只清空该工单内容并保留公式、格式和锁定；\n3. 原工单号永久作废，不会重新分配。')) return;
   var before=cloneJson(STATE.data);
   STATE.data.issues=STATE.data.issues.filter(function(i){return String(i.id)!==String(id)});
   STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(id)});
@@ -2620,6 +2635,7 @@ async function deleteIssue(id){
   renderApp();
   var saved=await saving;
   if(!saved){STATE.data=before;renderApp();T('删除未同步，工单已恢复，请重试');return}
+  if(saved.workbookSync&&saved.workbookSync.pending)scheduleWorkbookDeletionRetry(STATE.user.userId,30000);
   T(saved.conflicts&&saved.conflicts.length?'另一设备刚更新了此工单；为保护最新跟进，本次未删除':businessWorkbookMessage('工单已从客户台删除',saved));
 }
 function archiveIssue(issue){

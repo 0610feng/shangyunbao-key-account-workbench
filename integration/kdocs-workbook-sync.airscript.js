@@ -4,6 +4,8 @@
  *   工单登记与跟进 C,D,E,F,H,X,Y
  *   每日跟进 A,B,D,E,F
  *   工作台跟进映射 A:N（仅作为跟进ID幂等索引）
+ *   删除同步时，按工单号清空上述业务区域以及工作台工单/归档映射的对应内容。
+ * 删除从不删整行，不写入公式列，不改格式、验证或锁定属性。
  * 绝不写驾驶舱、公式列、当前未完结、已完结等动态结果表。
  */
 
@@ -11,12 +13,16 @@ var CONTRACT = {
   mainSheet: '工单登记与跟进',
   followSheet: '每日跟进',
   followMapSheet: '工作台跟进映射',
+  ticketMapSheet: '工作台工单映射',
+  archiveMapSheet: '工作台归档映射',
   mainFirstRow: 6,
   mainLastRow: 1005,
   followFirstRow: 6,
   followLastRow: 2005,
   mapFirstRow: 5,
   mapLastRow: 2005,
+  businessMapFirstRow: 5,
+  businessMapLastRow: 1005,
   urgencies: ['紧急', '高', '普通', '低'],
   followStatuses: ['跟进中', '已完结'],
   requiredTicketFields: [
@@ -27,6 +33,9 @@ var CONTRACT = {
   requiredFollowFields: [
     'followUpId', 'ticketId', 'ticketNo', 'followedAt', 'followerId',
     'followerName', 'content', 'status'
+  ],
+  requiredDeletionFields: [
+    'issueId', 'ticketNo', 'ownerUserId', 'deletedAt'
   ]
 };
 
@@ -68,9 +77,20 @@ function includes(list, value) {
 
 function validatePayload(payload) {
   if (!payload || typeof payload !== 'object') throw syncError('INVALID_PAYLOAD', '同步参数为空');
-  if (payload.schemaVersion !== 1) throw syncError('UNSUPPORTED_SCHEMA_VERSION', '仅支持 schemaVersion=1');
+  if (payload.schemaVersion !== 1 && payload.schemaVersion !== 2) {
+    throw syncError('UNSUPPORTED_SCHEMA_VERSION', '仅支持 schemaVersion=1 或 2');
+  }
   if (!Array.isArray(payload.tickets) || !Array.isArray(payload.followups)) {
     throw syncError('INVALID_PAYLOAD_COLLECTIONS', 'tickets 和 followups 必须为数组');
+  }
+  if (payload.schemaVersion === 2 && !Array.isArray(payload.deletions)) {
+    throw syncError('INVALID_PAYLOAD_COLLECTIONS', 'schemaVersion=2 时 deletions 必须为数组');
+  }
+  if (payload.schemaVersion === 1) {
+    if (Array.isArray(payload.deletions) && payload.deletions.length) {
+      throw syncError('UNSUPPORTED_DELETION_SCHEMA', '删除同步必须使用 schemaVersion=2');
+    }
+    payload.deletions = [];
   }
   var ticketNumbers = {};
   var ticketIds = {};
@@ -123,6 +143,39 @@ function validatePayload(payload) {
     if (!isFinite(dateToExcelSerial(followUp.followedAt, false))) {
       throw syncError('INVALID_FOLLOWED_AT', '跟进时间无效：' + followUpId);
     }
+    if (hasOwn(followUp, 'sourceDailyRow') && !isBlank(followUp.sourceDailyRow)) {
+      var sourceDailyRow = Number(followUp.sourceDailyRow);
+      if (!isFinite(sourceDailyRow) || Math.floor(sourceDailyRow) !== sourceDailyRow ||
+          sourceDailyRow < CONTRACT.followFirstRow || sourceDailyRow > CONTRACT.followLastRow) {
+        throw syncError('INVALID_SOURCE_DAILY_ROW', '历史跟进行号必须在 6-2005 之间：' + followUpId);
+      }
+    }
+  });
+
+  var deletionNumbers = {};
+  var deletionIds = {};
+  payload.deletions.forEach(function (deletion) {
+    if (!deletion || typeof deletion !== 'object') throw syncError('INVALID_DELETION', '删除记录不是对象');
+    CONTRACT.requiredDeletionFields.forEach(function (field) {
+      if (!hasOwn(deletion, field)) throw syncError('MISSING_DELETION_FIELD', '删除记录缺少字段 ' + field);
+    });
+    var ticketNo = asText(deletion.ticketNo).trim();
+    var issueId = asText(deletion.issueId).trim();
+    if (!/^\d{11}$/.test(ticketNo) || ticketNo.slice(-3) === '000') {
+      throw syncError('INVALID_TICKET_NO', '删除记录的工单编号无效：' + ticketNo);
+    }
+    if (!issueId || !asText(deletion.ownerUserId).trim()) {
+      throw syncError('MISSING_DELETION_IDENTITY', '删除记录缺少 issueId 或 ownerUserId：' + ticketNo);
+    }
+    if (!isFinite(dateToExcelSerial(deletion.deletedAt, false))) {
+      throw syncError('INVALID_DELETED_AT', '删除时间无效：' + ticketNo);
+    }
+    if (deletionNumbers[ticketNo] || ticketNumbers[ticketNo]) {
+      throw syncError('DUPLICATE_TICKET_NO', '同步参数含重复或同时删除与写入的工单编号：' + ticketNo);
+    }
+    if (deletionIds[issueId]) throw syncError('DUPLICATE_DELETION_ID', '同步参数含重复删除工单ID：' + issueId);
+    deletionNumbers[ticketNo] = true;
+    deletionIds[issueId] = true;
   });
   return payload;
 }
@@ -180,6 +233,147 @@ function rowValuesEqual(current, desired) {
     if (!valuesEqual(current[index], desired[index])) return false;
   }
   return true;
+}
+
+function rowIsBlank(row) {
+  return (Array.isArray(row) ? row : []).every(isBlank);
+}
+
+function addUniqueRow(rows, rowNumber) {
+  if (rows.indexOf(rowNumber) < 0) rows.push(rowNumber);
+}
+
+function buildDeletionPlan(deletions, snapshot) {
+  var mainCount = CONTRACT.mainLastRow - CONTRACT.mainFirstRow + 1;
+  var followCount = CONTRACT.followLastRow - CONTRACT.followFirstRow + 1;
+  var followMapCount = CONTRACT.mapLastRow - CONTRACT.mapFirstRow + 1;
+  var businessMapCount = CONTRACT.businessMapLastRow - CONTRACT.businessMapFirstRow + 1;
+  var xy = normalizeMatrix(snapshot.main.xy, mainCount, 2);
+  var cToF = normalizeMatrix(snapshot.main.cToF, mainCount, 4);
+  var h = normalizeMatrix(snapshot.main.h, mainCount, 1);
+  var ab = normalizeMatrix(snapshot.follow.ab, followCount, 2);
+  var dToF = normalizeMatrix(snapshot.follow.dToF, followCount, 3);
+  var followMap = normalizeMatrix(snapshot.follow.map, followMapCount, 14);
+  var ticketMap = normalizeMatrix(snapshot.ticketMap, businessMapCount, 16);
+  var archiveMap = normalizeMatrix(snapshot.archiveMap, businessMapCount, 13);
+  var mainRowsByTicket = {};
+
+  for (var mainIndex = 0; mainIndex < mainCount; mainIndex += 1) {
+    var permanentNo = asText(xy[mainIndex][0]).trim();
+    if (!permanentNo) continue;
+    if (mainRowsByTicket[permanentNo]) {
+      throw syncError('DUPLICATE_WORKBOOK_TICKET_NO', '表格隐藏X列存在重复编号：' + permanentNo);
+    }
+    mainRowsByTicket[permanentNo] = CONTRACT.mainFirstRow + mainIndex;
+  }
+
+  return deletions.map(function (deletion) {
+    var ticketNo = asText(deletion.ticketNo).trim();
+    var mainRow = mainRowsByTicket[ticketNo] || 0;
+    var dailyRows = [];
+    var followMapRows = [];
+    var ticketMapRows = [];
+    var archiveMapRows = [];
+
+    for (var followIndex = 0; followIndex < followCount; followIndex += 1) {
+      if (valuesEqual(ab[followIndex][0], ticketNo)) {
+        addUniqueRow(dailyRows, CONTRACT.followFirstRow + followIndex);
+      }
+    }
+    for (var mapIndex = 0; mapIndex < followMapCount; mapIndex += 1) {
+      if (!valuesEqual(followMap[mapIndex][4], ticketNo)) continue; // E列=工单号
+      var mapRowNumber = CONTRACT.mapFirstRow + mapIndex;
+      addUniqueRow(followMapRows, mapRowNumber);
+      var mappedDailyRow = Number(followMap[mapIndex][12]); // M列=每日跟进行号
+      if (isFinite(mappedDailyRow) && mappedDailyRow >= CONTRACT.followFirstRow && mappedDailyRow <= CONTRACT.followLastRow) {
+        var mappedDailyTicketNo = asText(ab[mappedDailyRow - CONTRACT.followFirstRow][0]).trim();
+        if (mappedDailyTicketNo && mappedDailyTicketNo !== ticketNo) {
+          throw syncError('DELETE_FOLLOWUP_MAPPING_CONFLICT', '工单 ' + ticketNo + ' 的跟进映射指向了其他工单行：' + mappedDailyTicketNo);
+        }
+        addUniqueRow(dailyRows, mappedDailyRow);
+      }
+    }
+    for (var ticketMapIndex = 0; ticketMapIndex < businessMapCount; ticketMapIndex += 1) {
+      if (valuesEqual(ticketMap[ticketMapIndex][3], ticketNo)) { // D列=工单号
+        addUniqueRow(ticketMapRows, CONTRACT.businessMapFirstRow + ticketMapIndex);
+      }
+      if (valuesEqual(archiveMap[ticketMapIndex][4], ticketNo)) { // E列=工单号
+        addUniqueRow(archiveMapRows, CONTRACT.businessMapFirstRow + ticketMapIndex);
+      }
+    }
+    if (ticketMapRows.length > 1) {
+      throw syncError('DUPLICATE_WORKBOOK_TICKET_MAPPING', '工作台工单映射存在重复编号：' + ticketNo);
+    }
+    if (archiveMapRows.length > 1) {
+      throw syncError('DUPLICATE_WORKBOOK_ARCHIVE_MAPPING', '工作台归档映射存在重复编号：' + ticketNo);
+    }
+
+    var mainNeedsClear = false;
+    if (mainRow) {
+      var mainOffset = mainRow - CONTRACT.mainFirstRow;
+      mainNeedsClear = !rowIsBlank(xy[mainOffset]) || !rowIsBlank(cToF[mainOffset]) || !isBlank(h[mainOffset][0]);
+    }
+    var dailyNeedsClear = dailyRows.some(function (rowNumber) {
+      var offset = rowNumber - CONTRACT.followFirstRow;
+      return !rowIsBlank(ab[offset]) || !rowIsBlank(dToF[offset]);
+    });
+    var followMapNeedsClear = followMapRows.some(function (rowNumber) {
+      return !rowIsBlank(followMap[rowNumber - CONTRACT.mapFirstRow]);
+    });
+    var ticketMapNeedsClear = ticketMapRows.some(function (rowNumber) {
+      return !rowIsBlank(ticketMap[rowNumber - CONTRACT.businessMapFirstRow]);
+    });
+    var archiveMapNeedsClear = archiveMapRows.some(function (rowNumber) {
+      return !rowIsBlank(archiveMap[rowNumber - CONTRACT.businessMapFirstRow]);
+    });
+
+    return {
+      deletion: deletion,
+      ticketNo: ticketNo,
+      mainRow: mainRow,
+      dailyRows: dailyRows.sort(function (a, b) { return a - b; }),
+      followMapRows: followMapRows.sort(function (a, b) { return a - b; }),
+      ticketMapRows: ticketMapRows,
+      archiveMapRows: archiveMapRows,
+      mainNeedsClear: mainNeedsClear,
+      dailyNeedsClear: dailyNeedsClear,
+      followMapNeedsClear: followMapNeedsClear,
+      ticketMapNeedsClear: ticketMapNeedsClear,
+      archiveMapNeedsClear: archiveMapNeedsClear,
+      willClear: mainNeedsClear || dailyNeedsClear || followMapNeedsClear || ticketMapNeedsClear || archiveMapNeedsClear
+    };
+  });
+}
+
+function blankMatrixRow(matrix, offset) {
+  if (!matrix || !matrix[offset]) return;
+  for (var index = 0; index < matrix[offset].length; index += 1) matrix[offset][index] = '';
+}
+
+function applyDeletionPlanToSnapshot(deletePlan, snapshot) {
+  deletePlan.forEach(function (operation) {
+    if (operation.mainRow) {
+      var mainOffset = operation.mainRow - CONTRACT.mainFirstRow;
+      blankMatrixRow(snapshot.main.xy, mainOffset);
+      blankMatrixRow(snapshot.main.cToF, mainOffset);
+      blankMatrixRow(snapshot.main.h, mainOffset);
+    }
+    operation.dailyRows.forEach(function (rowNumber) {
+      var followOffset = rowNumber - CONTRACT.followFirstRow;
+      blankMatrixRow(snapshot.follow.ab, followOffset);
+      blankMatrixRow(snapshot.follow.dToF, followOffset);
+    });
+    operation.followMapRows.forEach(function (rowNumber) {
+      blankMatrixRow(snapshot.follow.map, rowNumber - CONTRACT.mapFirstRow);
+    });
+    operation.ticketMapRows.forEach(function (rowNumber) {
+      blankMatrixRow(snapshot.ticketMap, rowNumber - CONTRACT.businessMapFirstRow);
+    });
+    operation.archiveMapRows.forEach(function (rowNumber) {
+      blankMatrixRow(snapshot.archiveMap, rowNumber - CONTRACT.businessMapFirstRow);
+    });
+  });
+  return snapshot;
 }
 
 function buildMainPlan(tickets, snapshot) {
@@ -248,6 +442,24 @@ function dailyRowMatches(row, followUp) {
     valuesEqual(row.f, followUp.status);
 }
 
+function dailyRowMatchesHistoricalSource(row, followUp) {
+  var sourceStatusWasBlank = hasOwn(followUp, 'sourceFollowUpStatus') &&
+    isBlank(followUp.sourceFollowUpStatus) && followUp.status === '跟进中';
+  return valuesEqual(row.a, followUp.ticketNo) &&
+    valuesEqual(row.b, dateToExcelSerial(followUp.followedAt, false)) &&
+    valuesEqual(row.d, followUp.followerName) &&
+    valuesEqual(row.e, followUp.content) &&
+    (valuesEqual(row.f, followUp.status) || (sourceStatusWasBlank && isBlank(row.f)));
+}
+
+function isOfflinePreviewMappingRow(row, dailyRow) {
+  return asText(row[0]).trim() === '待确认' &&
+    /^MIG-FU-\d+$/.test(asText(row[2]).trim()) &&
+    /^MIG-/.test(asText(row[3]).trim()) &&
+    Number(row[12]) === Number(dailyRow) &&
+    asText(row[13]).trim() === '通过';
+}
+
 function dailyRowCompatiblePartial(row, followUp) {
   var expected = {
     a: followUp.ticketNo,
@@ -272,6 +484,8 @@ function buildFollowPlan(followups, snapshot) {
   var lastDailyRow = CONTRACT.followFirstRow - 1;
   var lastMapRow = CONTRACT.mapFirstRow - 1;
   var mappingById = {};
+  var mappingByDailyRow = {};
+  var offlinePreviewByDailyRow = {};
 
   for (var index = 0; index < followCount; index += 1) {
     var rowNumber = CONTRACT.followFirstRow + index;
@@ -290,9 +504,24 @@ function buildFollowPlan(followups, snapshot) {
     var followUpId = asText(map[mapIndex][2]).trim(); // C列
     if (!followUpId) continue;
     if (mappingById[followUpId]) throw syncError('DUPLICATE_FOLLOWUP_MAPPING', '跟进映射表存在重复ID：' + followUpId);
+    var mappedDailyRow = Number(map[mapIndex][12]); // M列
+    if (isFinite(mappedDailyRow) && mappedDailyRow >= CONTRACT.followFirstRow && mappedDailyRow <= CONTRACT.followLastRow) {
+      var mappedFollowUpId = mappingByDailyRow[mappedDailyRow];
+      if (mappedFollowUpId && mappedFollowUpId !== followUpId) {
+        throw syncError('DUPLICATE_DAILY_ROW_MAPPING', '每日跟进第 ' + mappedDailyRow + ' 行已映射到多个跟进ID');
+      }
+      mappingByDailyRow[mappedDailyRow] = followUpId;
+      if (isOfflinePreviewMappingRow(map[mapIndex], mappedDailyRow)) {
+        offlinePreviewByDailyRow[mappedDailyRow] = {
+          followUpId: followUpId,
+          mapRow: mapRowNumber,
+          ticketNo: asText(map[mapIndex][4]).trim()
+        };
+      }
+    }
     mappingById[followUpId] = {
       mapRow: mapRowNumber,
-      dailyRow: Number(map[mapIndex][12]) // M列
+      dailyRow: mappedDailyRow
     };
   }
 
@@ -308,8 +537,12 @@ function buildFollowPlan(followups, snapshot) {
       if (!isFinite(mapped.dailyRow) || mapped.dailyRow < CONTRACT.followFirstRow || mapped.dailyRow > CONTRACT.followLastRow) {
         throw syncError('INVALID_FOLLOWUP_MAPPING_ROW', '跟进ID ' + followUpId + ' 映射到无效行');
       }
+      if (hasOwn(followUp, 'sourceDailyRow') && !isBlank(followUp.sourceDailyRow) &&
+          Number(followUp.sourceDailyRow) !== mapped.dailyRow) {
+        throw syncError('FOLLOWUP_SOURCE_ROW_MAPPING_CONFLICT', '跟进ID ' + followUpId + ' 的来源行与既有映射行不一致');
+      }
       var existing = daily[mapped.dailyRow - CONTRACT.followFirstRow];
-      if (dailyRowMatches(existing, followUp)) {
+      if (dailyRowMatches(existing, followUp) || dailyRowMatchesHistoricalSource(existing, followUp)) {
         operations.push({ kind: 'unchanged', followUp: followUp, dailyRow: mapped.dailyRow, mapRow: mapped.mapRow });
         return;
       }
@@ -324,12 +557,50 @@ function buildFollowPlan(followups, snapshot) {
       return;
     }
 
+    if (hasOwn(followUp, 'sourceDailyRow') && !isBlank(followUp.sourceDailyRow)) {
+      var sourceDailyRow = Number(followUp.sourceDailyRow);
+      var existingFollowUpId = mappingByDailyRow[sourceDailyRow];
+      if (existingFollowUpId && existingFollowUpId !== followUpId) {
+        var offlinePreview = offlinePreviewByDailyRow[sourceDailyRow];
+        var canReplaceOfflinePreview = offlinePreview &&
+          offlinePreview.followUpId === existingFollowUpId &&
+          offlinePreview.ticketNo === asText(followUp.ticketNo).trim();
+        if (!canReplaceOfflinePreview) {
+          throw syncError('FOLLOWUP_RECONCILIATION_ROW_CONFLICT', '每日跟进第 ' + sourceDailyRow + ' 行已映射到其他跟进ID');
+        }
+        var offlineSourceDaily = daily[sourceDailyRow - CONTRACT.followFirstRow];
+        if (!dailyRowMatchesHistoricalSource(offlineSourceDaily, followUp)) {
+          throw syncError('FOLLOWUP_RECONCILIATION_MISMATCH', '跟进ID ' + followUpId + ' 与每日跟进第 ' + sourceDailyRow + ' 行内容不一致');
+        }
+        delete mappingById[existingFollowUpId];
+        mappingById[followUpId] = { mapRow: offlinePreview.mapRow, dailyRow: sourceDailyRow };
+        mappingByDailyRow[sourceDailyRow] = followUpId;
+        delete offlinePreviewByDailyRow[sourceDailyRow];
+        operations.push({ kind: 'reconcile', followUp: followUp, dailyRow: sourceDailyRow, mapRow: offlinePreview.mapRow });
+        return;
+      }
+      var sourceDaily = daily[sourceDailyRow - CONTRACT.followFirstRow];
+      if (!dailyRowMatchesHistoricalSource(sourceDaily, followUp)) {
+        throw syncError('FOLLOWUP_RECONCILIATION_MISMATCH', '跟进ID ' + followUpId + ' 与每日跟进第 ' + sourceDailyRow + ' 行内容不一致');
+      }
+      var reconciliationMapRow = lastMapRow + 1;
+      if (reconciliationMapRow > CONTRACT.mapLastRow) {
+        throw syncError('FOLLOW_MAP_CAPACITY_EXCEEDED', '工作台跟进映射已无可用行（5-2005）');
+      }
+      lastMapRow = reconciliationMapRow;
+      mappingById[followUpId] = { mapRow: reconciliationMapRow, dailyRow: sourceDailyRow };
+      mappingByDailyRow[sourceDailyRow] = followUpId;
+      operations.push({ kind: 'reconcile', followUp: followUp, dailyRow: sourceDailyRow, mapRow: reconciliationMapRow });
+      return;
+    }
+
     var serial = dateToExcelSerial(followUp.followedAt, false);
     var latest = latestByTicket[followUp.ticketNo] || 0;
     if (latest && serial + 0.000001 < latest) {
       throw syncError('BACKDATED_FOLLOWUP_REQUIRES_RECONCILIATION', '工单 ' + followUp.ticketNo + ' 有早于现有最新记录的新增跟进，已停止以防最新状态被覆盖');
     }
     var nextDailyRow = lastDailyRow + 1;
+    while (mappingByDailyRow[nextDailyRow] && nextDailyRow <= CONTRACT.followLastRow) nextDailyRow += 1;
     var nextMapRow = lastMapRow + 1;
     if (nextDailyRow > CONTRACT.followLastRow) throw syncError('FOLLOW_SHEET_CAPACITY_EXCEEDED', '每日跟进已无可用行（6-2005）');
     if (nextMapRow > CONTRACT.mapLastRow) throw syncError('FOLLOW_MAP_CAPACITY_EXCEEDED', '工作台跟进映射已无可用行（5-2005）');
@@ -337,6 +608,7 @@ function buildFollowPlan(followups, snapshot) {
     lastMapRow = nextMapRow;
     latestByTicket[followUp.ticketNo] = Math.max(latest, serial);
     mappingById[followUpId] = { mapRow: nextMapRow, dailyRow: nextDailyRow };
+    mappingByDailyRow[nextDailyRow] = followUpId;
     operations.push({ kind: 'append', followUp: followUp, dailyRow: nextDailyRow, mapRow: nextMapRow });
   });
   return operations;
@@ -346,16 +618,31 @@ function cellAddress(column, row) {
   return column + String(row);
 }
 
-function assertNewRowFormulaTemplate(sheet, row) {
+function assertMainFormulaTemplate(sheet, row, contextLabel) {
   ['A', 'B', 'G', 'I', 'J', 'K', 'L'].forEach(function (column) {
     var formula = asText(sheet.Range(cellAddress(column, row)).Formula);
     if (formula.charAt(0) !== '=') {
-      throw syncError('MAIN_TEMPLATE_FORMULA_MISSING', '新工单目标行 ' + row + ' 的公式列 ' + column + ' 缺失');
+      throw syncError('MAIN_TEMPLATE_FORMULA_MISSING', (contextLabel || '工单目标行') + ' ' + row + ' 的公式列 ' + column + ' 缺失');
     }
   });
 }
 
-function readWorkbookSnapshot(mainSheet, followSheet, mapSheet) {
+function assertDailyFormulaTemplate(sheet, row) {
+  var formula = asText(sheet.Range(cellAddress('C', row)).Formula);
+  if (formula.charAt(0) !== '=') {
+    throw syncError('FOLLOW_TEMPLATE_FORMULA_MISSING', '删除工单关联的每日跟进行 ' + row + ' 的公式列 C 缺失');
+  }
+}
+
+function getOptionalWorksheet(application, name) {
+  try {
+    return application.Worksheets.Item(name) || null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function readWorkbookSnapshot(mainSheet, followSheet, mapSheet, ticketMapSheet, archiveMapSheet) {
   return {
     main: {
       xy: mainSheet.Range('X6:Y1005').Value2,
@@ -366,8 +653,41 @@ function readWorkbookSnapshot(mainSheet, followSheet, mapSheet) {
       ab: followSheet.Range('A6:B2005').Value2,
       dToF: followSheet.Range('D6:F2005').Value2,
       map: mapSheet.Range('A5:N2005').Value2
-    }
+    },
+    ticketMap: ticketMapSheet ? ticketMapSheet.Range('A5:P1005').Value2 : [],
+    archiveMap: archiveMapSheet ? archiveMapSheet.Range('A5:M1005').Value2 : []
   };
+}
+
+function blankRowValues(columnCount) {
+  var row = [];
+  for (var index = 0; index < columnCount; index += 1) row.push('');
+  return [row];
+}
+
+function writeDeletionOperation(mainSheet, followSheet, mapSheet, ticketMapSheet, archiveMapSheet, operation) {
+  if (operation.mainRow) {
+    mainSheet.Range('C' + operation.mainRow + ':F' + operation.mainRow).Value2 = blankRowValues(4);
+    mainSheet.Range('H' + operation.mainRow).Value2 = '';
+    mainSheet.Range('X' + operation.mainRow + ':Y' + operation.mainRow).Value2 = blankRowValues(2);
+  }
+  operation.dailyRows.forEach(function (rowNumber) {
+    followSheet.Range('A' + rowNumber + ':B' + rowNumber).Value2 = blankRowValues(2);
+    followSheet.Range('D' + rowNumber + ':F' + rowNumber).Value2 = blankRowValues(3);
+  });
+  operation.followMapRows.forEach(function (rowNumber) {
+    mapSheet.Range('A' + rowNumber + ':N' + rowNumber).Value2 = blankRowValues(14);
+  });
+  if (ticketMapSheet) {
+    operation.ticketMapRows.forEach(function (rowNumber) {
+      ticketMapSheet.Range('A' + rowNumber + ':P' + rowNumber).Value2 = blankRowValues(16);
+    });
+  }
+  if (archiveMapSheet) {
+    operation.archiveMapRows.forEach(function (rowNumber) {
+      archiveMapSheet.Range('A' + rowNumber + ':M' + rowNumber).Value2 = blankRowValues(13);
+    });
+  }
 }
 
 function writeMainOperation(sheet, operation) {
@@ -401,10 +721,11 @@ function mappingValues(operation) {
 function writeFollowOperation(followSheet, mapSheet, operation) {
   if (operation.kind === 'unchanged') return;
   var followUp = operation.followUp;
-  if (operation.kind === 'append') {
-    // 映射先落盘；若每日跟进写入中断，下次会识别空行并恢复，不会重复追加。
+  if (operation.kind === 'append' || operation.kind === 'reconcile') {
+    // 新增时映射先落盘；历史对账只补映射，绝不改动已核验的每日跟进行。
     mapSheet.Range('A' + operation.mapRow + ':N' + operation.mapRow).Value2 = mappingValues(operation);
   }
+  if (operation.kind === 'reconcile') return;
   followSheet.Range('A' + operation.dailyRow + ':B' + operation.dailyRow).Value2 = [[
     followUp.ticketNo,
     dateToExcelSerial(followUp.followedAt, false)
@@ -443,6 +764,80 @@ function oneRowValues(range, expectedColumns) {
   return normalizeMatrix([value], 1, expectedColumns)[0];
 }
 
+function markDeletionPlanReuse(deletePlan, mainPlan, followPlan) {
+  deletePlan.forEach(function (operation) {
+    operation.mainReused = mainPlan.some(function (mainOperation) {
+      return operation.mainRow && mainOperation.row === operation.mainRow;
+    });
+    operation.dailyRowsReused = {};
+    operation.followMapRowsReused = {};
+    followPlan.forEach(function (followOperation) {
+      if (operation.dailyRows.indexOf(followOperation.dailyRow) >= 0) {
+        operation.dailyRowsReused[followOperation.dailyRow] = true;
+      }
+      if (operation.followMapRows.indexOf(followOperation.mapRow) >= 0) {
+        operation.followMapRowsReused[followOperation.mapRow] = true;
+      }
+    });
+  });
+}
+
+function verifyDeletionWrites(mainSheet, followSheet, mapSheet, ticketMapSheet, archiveMapSheet, deletePlan) {
+  var verified = 0;
+  deletePlan.forEach(function (operation) {
+    if (operation.mainRow) {
+      assertMainFormulaTemplate(mainSheet, operation.mainRow, '删除工单目标行');
+      var mainNumberAndDate = oneRowValues(mainSheet.Range('X' + operation.mainRow + ':Y' + operation.mainRow), 2);
+      if (valuesEqual(mainNumberAndDate[0], operation.ticketNo)) {
+        throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 仍存在于主表隐藏编号列');
+      }
+      if (!operation.mainReused) {
+        if (!rowIsBlank(mainNumberAndDate) ||
+            !rowIsBlank(oneRowValues(mainSheet.Range('C' + operation.mainRow + ':F' + operation.mainRow), 4)) ||
+            !isBlank(oneRowValues(mainSheet.Range('H' + operation.mainRow), 1)[0])) {
+          throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 的主表业务字段未完全清空');
+        }
+      }
+    }
+    operation.dailyRows.forEach(function (rowNumber) {
+      assertDailyFormulaTemplate(followSheet, rowNumber);
+      var ab = oneRowValues(followSheet.Range('A' + rowNumber + ':B' + rowNumber), 2);
+      if (valuesEqual(ab[0], operation.ticketNo)) {
+        throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 仍存在于每日跟进第 ' + rowNumber + ' 行');
+      }
+      if (!operation.dailyRowsReused[rowNumber] &&
+          (!rowIsBlank(ab) || !rowIsBlank(oneRowValues(followSheet.Range('D' + rowNumber + ':F' + rowNumber), 3)))) {
+        throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 的每日跟进内容未完全清空');
+      }
+    });
+    operation.followMapRows.forEach(function (rowNumber) {
+      var mapValues = oneRowValues(mapSheet.Range('A' + rowNumber + ':N' + rowNumber), 14);
+      if (valuesEqual(mapValues[4], operation.ticketNo)) {
+        throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 仍存在于跟进映射表');
+      }
+      if (!operation.followMapRowsReused[rowNumber] && !rowIsBlank(mapValues)) {
+        throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 的跟进映射内容未完全清空');
+      }
+    });
+    if (ticketMapSheet) {
+      operation.ticketMapRows.forEach(function (rowNumber) {
+        if (!rowIsBlank(oneRowValues(ticketMapSheet.Range('A' + rowNumber + ':P' + rowNumber), 16))) {
+          throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 的工单映射内容未完全清空');
+        }
+      });
+    }
+    if (archiveMapSheet) {
+      operation.archiveMapRows.forEach(function (rowNumber) {
+        if (!rowIsBlank(oneRowValues(archiveMapSheet.Range('A' + rowNumber + ':M' + rowNumber), 13))) {
+          throw syncError('DELETE_VERIFICATION_FAILED', '工单 ' + operation.ticketNo + ' 的归档映射内容未完全清空');
+        }
+      });
+    }
+    verified += 1;
+  });
+  return verified;
+}
+
 function verifyWorkbookWrites(mainSheet, followSheet, mapSheet, mainPlan, followPlan) {
   mainPlan.forEach(function (operation) {
     var row = operation.row;
@@ -460,14 +855,20 @@ function verifyWorkbookWrites(mainSheet, followSheet, mapSheet, mainPlan, follow
   });
   followPlan.forEach(function (operation) {
     var followUp = operation.followUp;
-    if (!rowValuesEqual(oneRowValues(followSheet.Range('A' + operation.dailyRow + ':B' + operation.dailyRow), 2), [
+    var dailyAB = oneRowValues(followSheet.Range('A' + operation.dailyRow + ':B' + operation.dailyRow), 2);
+    var dailyDToF = oneRowValues(followSheet.Range('D' + operation.dailyRow + ':F' + operation.dailyRow), 3);
+    if (!rowValuesEqual(dailyAB, [
       followUp.ticketNo, dateToExcelSerial(followUp.followedAt, false)
     ])) {
       throw syncError('WRITE_VERIFICATION_FAILED', '跟进 ' + followUp.followUpId + ' 的编号或时间回读不一致');
     }
-    if (!rowValuesEqual(oneRowValues(followSheet.Range('D' + operation.dailyRow + ':F' + operation.dailyRow), 3), [
-      followUp.followerName, followUp.content, followUp.status
-    ])) {
+    var dailyReadback = {
+      a: dailyAB[0], b: dailyAB[1], d: dailyDToF[0], e: dailyDToF[1], f: dailyDToF[2]
+    };
+    var dailyReadbackMatches = (operation.kind === 'reconcile' || operation.kind === 'unchanged')
+      ? dailyRowMatchesHistoricalSource(dailyReadback, followUp)
+      : dailyRowMatches(dailyReadback, followUp);
+    if (!dailyReadbackMatches) {
       throw syncError('WRITE_VERIFICATION_FAILED', '跟进 ' + followUp.followUpId + ' 的内容回读不一致');
     }
     if (!valuesEqual(oneRowValues(mapSheet.Range('C' + operation.mapRow), 1)[0], followUp.followUpId) ||
@@ -487,24 +888,43 @@ function executeWorkbookSync(payload, application) {
   var mainSheet = application.Worksheets.Item(CONTRACT.mainSheet);
   var followSheet = application.Worksheets.Item(CONTRACT.followSheet);
   var mapSheet = application.Worksheets.Item(CONTRACT.followMapSheet);
+  var ticketMapSheet = getOptionalWorksheet(application, CONTRACT.ticketMapSheet);
+  var archiveMapSheet = getOptionalWorksheet(application, CONTRACT.archiveMapSheet);
   if (!mainSheet || !followSheet || !mapSheet) throw syncError('WORKBOOK_CONTRACT_MISSING', '缺少必要工作表');
 
-  var snapshot = readWorkbookSnapshot(mainSheet, followSheet, mapSheet);
+  var snapshot = readWorkbookSnapshot(mainSheet, followSheet, mapSheet, ticketMapSheet, archiveMapSheet);
+  var deletePlan = buildDeletionPlan(payload.deletions, snapshot);
+  // 先在快照中虚拟清空，使同一批次的新工单可安全复用刚释放的行。
+  applyDeletionPlanToSnapshot(deletePlan, snapshot);
   var mainPlan = buildMainPlan(payload.tickets, snapshot.main);
   var followPlan = buildFollowPlan(payload.followups, snapshot.follow);
+  markDeletionPlanReuse(deletePlan, mainPlan, followPlan);
+  deletePlan.forEach(function (operation) {
+    if (operation.mainRow) assertMainFormulaTemplate(mainSheet, operation.mainRow, '删除工单目标行');
+    operation.dailyRows.forEach(function (rowNumber) { assertDailyFormulaTemplate(followSheet, rowNumber); });
+  });
   mainPlan.filter(function (operation) { return operation.isNew; }).forEach(function (operation) {
-    assertNewRowFormulaTemplate(mainSheet, operation.row);
+    assertMainFormulaTemplate(mainSheet, operation.row, '新工单目标行');
   });
 
   var mainWasProtected = mainSheet.ProtectContents !== false;
   var followWasProtected = followSheet.ProtectContents !== false;
   var mapWasProtected = mapSheet.ProtectContents === true;
+  var ticketMapWasProtected = ticketMapSheet && ticketMapSheet.ProtectContents === true;
+  var archiveMapWasProtected = archiveMapSheet && archiveMapSheet.ProtectContents === true;
   var writeError = null;
   var protectionError = null;
+  var deletionsVerified = 0;
   try {
     if (mainWasProtected) mainSheet.Unprotect();
     if (followWasProtected) followSheet.Unprotect();
     if (mapWasProtected) mapSheet.Unprotect();
+    if (ticketMapWasProtected) ticketMapSheet.Unprotect();
+    if (archiveMapWasProtected) archiveMapSheet.Unprotect();
+    // 实际写入也先删除后新增；不删整行，只把指定业务单元格设为空值。
+    deletePlan.forEach(function (operation) {
+      writeDeletionOperation(mainSheet, followSheet, mapSheet, ticketMapSheet, archiveMapSheet, operation);
+    });
     mainPlan.forEach(function (operation) { writeMainOperation(mainSheet, operation); });
     followPlan.forEach(function (operation) { writeFollowOperation(followSheet, mapSheet, operation); });
   } catch (error) {
@@ -512,6 +932,8 @@ function executeWorkbookSync(payload, application) {
   } finally {
     try { protectLikeBefore(mainSheet, mainWasProtected); } catch (error) { protectionError = protectionError || error; }
     try { protectLikeBefore(followSheet, followWasProtected); } catch (error) { protectionError = protectionError || error; }
+    try { if (ticketMapSheet) protectLikeBefore(ticketMapSheet, ticketMapWasProtected); } catch (error) { protectionError = protectionError || error; }
+    try { if (archiveMapSheet) protectLikeBefore(archiveMapSheet, archiveMapWasProtected); } catch (error) { protectionError = protectionError || error; }
     // 跟进映射是幂等索引，不向普通用户展示，并始终恢复为受保护状态。
     try { mapSheet.Protect(); } catch (error) { protectionError = protectionError || error; }
     try { mapSheet.Visible = false; } catch (error) { protectionError = protectionError || error; }
@@ -520,6 +942,10 @@ function executeWorkbookSync(payload, application) {
       assertWorkbookSaved(application.ActiveWorkbook.Save(), function () {
         verifyWorkbookWrites(mainSheet, followSheet, mapSheet, mainPlan, followPlan);
       });
+      // Save 返回 ok 时旧逻辑会信任保存回执；删除必须额外逐项回读，才能向 Edge 报 verified。
+      deletionsVerified = verifyDeletionWrites(
+        mainSheet, followSheet, mapSheet, ticketMapSheet, archiveMapSheet, deletePlan
+      );
     } catch (error) { protectionError = protectionError || error; }
   }
   if (writeError) throw writeError;
@@ -529,6 +955,15 @@ function executeWorkbookSync(payload, application) {
     ok: true,
     requestId: asText(payload.requestId),
     mode: asText(payload.mode),
+    deletions: payload.deletions.length,
+    deletionsReceived: payload.deletions.length,
+    deletionsCleared: deletePlan.filter(function (operation) { return operation.willClear; }).length,
+    deletionsVerified: deletionsVerified,
+    mainRowsCleared: deletePlan.filter(function (operation) { return operation.mainNeedsClear; }).length,
+    followRowsCleared: deletePlan.reduce(function (count, operation) { return count + operation.dailyRows.length; }, 0),
+    followMapRowsCleared: deletePlan.reduce(function (count, operation) { return count + operation.followMapRows.length; }, 0),
+    ticketMapRowsCleared: deletePlan.reduce(function (count, operation) { return count + operation.ticketMapRows.length; }, 0),
+    archiveMapRowsCleared: deletePlan.reduce(function (count, operation) { return count + operation.archiveMapRows.length; }, 0),
     ticketsReceived: payload.tickets.length,
     ticketsInserted: mainPlan.filter(function (operation) { return operation.isNew; }).length,
     ticketsUpdated: mainPlan.filter(function (operation) {
@@ -539,6 +974,7 @@ function executeWorkbookSync(payload, application) {
     }).length,
     followupsReceived: payload.followups.length,
     followupsAppended: followPlan.filter(function (operation) { return operation.kind === 'append'; }).length,
+    followupsReconciled: followPlan.filter(function (operation) { return operation.kind === 'reconcile'; }).length,
     followupsRecovered: followPlan.filter(function (operation) { return operation.kind === 'recover'; }).length,
     followupsUnchanged: followPlan.filter(function (operation) { return operation.kind === 'unchanged'; }).length
   };

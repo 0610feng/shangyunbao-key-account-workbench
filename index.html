@@ -308,7 +308,7 @@ var STATE = {
   pendingNewIssue: null,
   issueDetail: null,
   voiceText: '',
-  voiceParsed: {shop:'', desc:'', pri:'P2', deadline:''},
+  voiceParsed: {shop:'', desc:'', pri:'普通', deadline:''},
   voiceDetected: {shop:'', desc:'', pri:'', deadline:''},
   voiceParsedReady: false,
   voiceMissing: []
@@ -316,8 +316,21 @@ var STATE = {
 
 // ====== 工具函数 ======
 function gid(){return 'i'+Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
-function ts(){var d=new Date();return d.getFullYear()+'-'+S(d.getMonth()+1)+'-'+S(d.getDate())}
-function tsOffset(n){var d=new Date();d.setDate(d.getDate()+n);return d.getFullYear()+'-'+S(d.getMonth()+1)+'-'+S(d.getDate())}
+function shanghaiDateParts(value){
+  var date=value instanceof Date?value:new Date(value||Date.now());
+  try{
+    var parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);
+    var result={};parts.forEach(function(item){if(item.type==='year'||item.type==='month'||item.type==='day')result[item.type]=parseInt(item.value)});
+    if(result.year&&result.month&&result.day)return result;
+  }catch(e){}
+  return {year:date.getFullYear(),month:date.getMonth()+1,day:date.getDate()};
+}
+function ts(){var p=shanghaiDateParts(new Date());return p.year+'-'+S(p.month)+'-'+S(p.day)}
+function tsOffset(n){
+  var p=shanghaiDateParts(new Date());
+  var d=new Date(Date.UTC(p.year,p.month-1,p.day+Number(n||0),12));
+  return d.getUTCFullYear()+'-'+S(d.getUTCMonth()+1)+'-'+S(d.getUTCDate());
+}
 function S(n){return String(n).padStart(2,'0')}
 function parseLocalDate(value){
   var m=String(value||'').match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -328,6 +341,140 @@ function esc(s){var d=document.createElement('div');d.textContent=s;return d.inn
 function escAttr(s){return String(s===undefined||s===null?'':s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function inlineArg(s){return encodeURIComponent(String(s===undefined||s===null?'':s)).replace(/'/g,'%27')}
 function safePriority(value){return value==='P0'||value==='P1'||value==='P2'?value:'P2'}
+var EXCEL_URGENCY_VALUES=['紧急','高','普通','低'];
+var EXCEL_ASSIGNEE_NAMES=['郑康','张国鹏','杨柳','杜梦新','耿怡哲','张胜飞','张铭','张淦杨'];
+function normalizeAssigneeName(value){
+  value=String(value||'').trim();
+  if(value==='张淏杨'||value==='张洏杨')return '张淦杨';
+  return value;
+}
+function isValidExcelAssignee(value){return EXCEL_ASSIGNEE_NAMES.indexOf(normalizeAssigneeName(value))>=0}
+function assigneeDisplayName(value){
+  var name=normalizeAssigneeName(value);
+  return isValidExcelAssignee(name)?name:(name?'需重新选择（原：'+name+'）':'需重新选择');
+}
+function normalizeUrgency(value,legacyPriority){
+  value=String(value||'').trim();
+  if(EXCEL_URGENCY_VALUES.indexOf(value)>=0)return value;
+  var legacy=safePriority(value||legacyPriority);
+  return legacy==='P0'?'紧急':(legacy==='P1'?'高':'普通');
+}
+function urgencyToPriority(value){
+  value=normalizeUrgency(value);
+  return value==='紧急'?'P0':(value==='高'?'P1':'P2');
+}
+function safeFollowStatus(value){
+  value=String(value||'').trim();
+  if(value==='已完结')return '已完结';
+  if(value==='跟进中'||value==='阶段性完成')return '跟进中';
+  return '';
+}
+function dateOnly(value){
+  var text=String(value||'').trim();
+  if(/^\d{4}-\d{2}-\d{2}$/.test(text))return text;
+  var matched=text.match(/^(\d{4}-\d{2}-\d{2})[T ]/);
+  if(matched&&!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text))return matched[1];
+  var parsed=new Date(text);
+  if(!isNaN(parsed.getTime())){
+    var p=shanghaiDateParts(parsed);
+    return p.year+'-'+S(p.month)+'-'+S(p.day);
+  }
+  return matched?matched[1]:'';
+}
+function latestManualFollowUp(issue){
+  var followUps=issue&&Array.isArray(issue.followUps)?issue.followUps:[];
+  var manual=followUps.filter(function(item){return item&&item.type==='follow_up'});
+  manual.sort(function(a,b){
+    var byTime=String(b.followedAt||b.createdAt||'').localeCompare(String(a.followedAt||a.createdAt||''));
+    return byTime||String(b.followUpId||b.id||'').localeCompare(String(a.followUpId||a.id||''));
+  });
+  return manual[0]||null;
+}
+function deriveCurrentStatus(issue){
+  if(!issue)return '未跟进';
+  var latest=latestManualFollowUp(issue);
+  var latestStatus=latest?safeFollowStatus(latest.status||latest.toProgress):'';
+  // 有人工跟进时只认“时间 + 跟进ID”排序后的最新一条；progress 仅供没有历史记录的旧数据兜底。
+  if(latestStatus==='已完结'||(!latest&&safeFollowStatus(issue.progress)==='已完结'))return '已完结';
+  if(issue.deadline){
+    var deadlineDate=dateOnly(issue.deadline);
+    if(deadlineDate&&deadlineDate<ts())return '已逾期';
+  }
+  return latest?'跟进中':'未跟进';
+}
+function normalizeFollowUpContract(item,issue){
+  item=item&&typeof item==='object'?item:{};
+  item.id=item.id||item.followUpId||gid();
+  item.followUpId=String(item.followUpId||item.id);
+  item.followedAt=item.followedAt||item.createdAt||'';
+  item.createdAt=item.createdAt||item.followedAt||'';
+  item.followerId=String(item.followerId||item.authorId||'');
+  item.followerName=normalizeAssigneeName(item.followerName||item.authorName||'');
+  item.authorId=item.authorId||item.followerId;
+  item.authorName=normalizeAssigneeName(item.authorName||item.followerName);
+  if(item.type==='follow_up')item.status=safeFollowStatus(item.status||item.toProgress||issue&&issue.progress)||'跟进中';
+  return item;
+}
+function normalizeIssueContract(issue){
+  issue=issue&&typeof issue==='object'?issue:{};
+  issue.id=issue.id||gid();
+  issue.ticketNo=String(issue.ticketNo||'').trim();
+  issue.createdAt=issue.createdAt||ts();
+  issue.urgency=normalizeUrgency(issue.urgency,issue.priority);
+  issue.priority=urgencyToPriority(issue.urgency);
+  issue.assigneeId=String(issue.assigneeId||'');
+  issue.assigneeName=normalizeAssigneeName(issue.assigneeName);
+  issue.deadline=String(issue.deadline||'');
+  issue.followUps=Array.isArray(issue.followUps)?issue.followUps.map(function(item){return normalizeFollowUpContract(item,issue)}):[];
+  var latest=latestManualFollowUp(issue);
+  issue.latestFollowUpId=latest?latest.followUpId||latest.id:'';
+  issue.latestFollowUpContent=latest?String(latest.content||''):'';
+  issue.latestFollowUpAt=latest?String(latest.followedAt||latest.createdAt||''):'';
+  issue.latestFollowUpStatus=latest?safeFollowStatus(latest.status||latest.toProgress):'';
+  issue.followStatus=issue.latestFollowUpStatus;
+  issue.currentStatus=deriveCurrentStatus(issue);
+  if(issue.currentStatus==='已完结'){
+    issue.progress='已完结';
+    // Excel 的“实际完结时间”由最新一条“已完结”跟进时间计算，客户台保持同一口径。
+    issue.completedAt=issue.latestFollowUpAt||issue.completedAt||issue.updatedAt||'';
+  }else{
+    if(safeFollowStatus(issue.progress)==='已完结')issue.progress=issue.latestFollowUpStatus||'跟进中';
+    issue.completedAt='';
+  }
+  return issue;
+}
+function copyIssueContractToArchive(archive,issue){
+  archive=archive&&typeof archive==='object'?archive:{};
+  issue=normalizeIssueContract(issue);
+  ['ticketNo','createdAt','shopName','shopDesc','urgency','priority','assigneeId','assigneeName','deadline','latestFollowUpId','latestFollowUpContent','latestFollowUpAt','latestFollowUpStatus','followStatus','currentStatus'].forEach(function(key){archive[key]=cloneJson(issue[key])});
+  archive.sourceIssueId=issue.id;
+  archive.completedAt=issue.completedAt||archive.completedAt||issue.latestFollowUpAt||ts();
+  archive.followUps=cloneJson(issue.followUps||[]);
+  return normalizeArchiveContract(archive);
+}
+function normalizeArchiveContract(archive){
+  archive=archive&&typeof archive==='object'?archive:{};
+  archive.ticketNo=String(archive.ticketNo||'').trim();
+  archive.createdAt=String(archive.createdAt||archive.originalCreatedAt||'');
+  archive.shopName=String(archive.shopName||'');
+  archive.shopDesc=String(archive.shopDesc||'');
+  var legacyPriority=archive.priority;
+  archive.urgency=(archive.urgency||archive.priority)?normalizeUrgency(archive.urgency,archive.priority):'';
+  archive.priority=archive.urgency?urgencyToPriority(archive.urgency):((legacyPriority==='P0'||legacyPriority==='P1'||legacyPriority==='P2')?legacyPriority:'');
+  archive.assigneeId=String(archive.assigneeId||'');
+  archive.assigneeName=normalizeAssigneeName(archive.assigneeName);
+  archive.deadline=String(archive.deadline||'');
+  archive.followUps=Array.isArray(archive.followUps)?archive.followUps.map(function(item){return normalizeFollowUpContract(item,{progress:'已完结'})}):[];
+  var latest=latestManualFollowUp(archive);
+  archive.latestFollowUpId=latest?String(latest.followUpId||latest.id):String(archive.latestFollowUpId||'');
+  archive.latestFollowUpStatus=latest?safeFollowStatus(latest.status||latest.toProgress):(safeFollowStatus(archive.latestFollowUpStatus)||'已完结');
+  archive.followStatus=archive.latestFollowUpStatus;
+  archive.latestFollowUpContent=latest?String(latest.content||''):String(archive.latestFollowUpContent||'');
+  archive.latestFollowUpAt=latest?String(latest.followedAt||latest.createdAt||''):String(archive.latestFollowUpAt||'');
+  archive.completedAt=String(archive.latestFollowUpAt||archive.completedAt||'');
+  archive.currentStatus='已完结';
+  return archive;
+}
 function nowIso(){return new Date().toISOString()}
 function formatDateTime(value){
   if(!value) return '时间未记录';
@@ -375,10 +522,121 @@ var refreshQueued = false;
 var syncPollTimer = null;
 var focusRefreshTimer = null;
 var isRefreshingCloud = false;
+var workbookCompensationUserId = '';
 var cloudBaseline = {issues:[],knowledge:[],archives:[],dailySupps:{}};
 var cloudRevision = '';
 var pendingHistoryOps = {};
 var cloudState = {text:'已连接 Supabase',color:'var(--success)'};
+
+function unwrapAllocatedTicketNo(data){
+  var value=Array.isArray(data)?data[0]:data;
+  if(value&&typeof value==='object')value=value.ticket_no||value.ticketNo||value.allocate_ticket_no||value.value||'';
+  value=String(value||'').trim();
+  return /^\d{11}$/.test(value)?value:'';
+}
+async function allocateTicketNo(requestKey,createdAt){
+  if(CLOUD_CONFIG.ticketNumberingEnabled!==true)return '';
+  if(!db)return '';
+  var createdDate=dateOnly(createdAt)||ts();
+  var createdTimestamp=/^\d{4}-\d{2}-\d{2}$/.test(createdDate)?createdDate+'T00:00:00+08:00':String(createdAt||nowIso());
+  var result=await db.rpc(CLOUD_CONFIG.ticketNumberRpc||'allocate_ticket_no',{p_request_key:String(requestKey||''),p_created_at:createdTimestamp});
+  if(result.error){
+    console.error('[商云宝] 工单编号申请失败',result.error);
+    return '';
+  }
+  return unwrapAllocatedTicketNo(result.data);
+}
+function workbookSyncErrorDetails(error,data){
+  data=data&&typeof data==='object'?data:{};
+  var response=error&&error.context;
+  var status=Number(data.statusCode||data.status||(response&&response.status)||error&&error.status)||0;
+  var code=String(data.code||error&&error.code||'');
+  var message=String(data.message||error&&error.message||'Excel表同步请求失败');
+  return {status:status,code:code,message:message,error:error};
+}
+function isRetryableWorkbookSyncError(details){
+  details=details||{};
+  if(details.code==='MISSING_SERVER_CONFIGURATION'||details.status===401||details.status===403||details.status===409||details.status===413)return false;
+  if(details.status===408||details.status===425||details.status===429||details.status===500||details.status===502||details.status===503||details.status===504)return true;
+  if(/^WPS_(HTTP|SCRIPT|INVALID|TEMP|UNAVAILABLE)|^SYNC_(CLAIM|FINISH|JOB)_/i.test(details.code))return true;
+  return !details.status&&/(network|fetch|timeout|timed out|connection|网络|超时|暂时)/i.test(details.message||'');
+}
+function workbookSyncDelay(ms){return new Promise(function(resolve){setTimeout(resolve,ms)})}
+function businessWorkbookMessage(action,saveResult){
+  var sync=saveResult&&saveResult.workbookSync;
+  var text=action+'；业务云端已保存';
+  if(sync&&sync.historyPreserved)return text+'，Excel历史表按规则保留';
+  if(sync&&sync.workbookSynced)return text+'，Excel表已同步';
+  if(sync&&sync.skipped&&!sync.pending)return text+'，Excel表联动暂未启用';
+  return text+'，Excel表待补同步';
+}
+async function requestWorkbookSync(reason,context){
+  context=context||{};
+  var clientRequestId=String(context.requestId||gid());
+  if(CLOUD_CONFIG.workbookSyncEnabled!==true)return {ok:true,skipped:true,status:'disabled',workbookSynced:false,pending:false,requestId:clientRequestId,attempts:0};
+  if(!db||!db.functions||typeof db.functions.invoke!=='function')return {ok:false,skipped:true,status:'unavailable',workbookSynced:false,pending:true,requestId:clientRequestId,attempts:0};
+  var functionName=CLOUD_CONFIG.workbookSyncFunction||'kdocs-workbook-sync';
+  // body 在全部重试中保持不变，尤其 requestId 不变，避免同一次保存产生重复同步任务。
+  var body=Object.assign({reason:reason||'workbench_data_saved',requestedAt:nowIso()},context,{requestId:clientRequestId});
+  var lastDetails=null;
+  var attempts=0;
+  for(var attempt=0;attempt<3;attempt++){
+    attempts=attempt+1;
+    try{
+      var result=await db.functions.invoke(functionName,{body:body});
+      var data=result.data&&typeof result.data==='object'?result.data:{};
+      if(result.error){
+        lastDetails=workbookSyncErrorDetails(result.error,data);
+        if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
+          await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
+          continue;
+        }
+        break;
+      }
+      var status=String(data.status||'');
+      var preservedDelete=status==='skipped'&&data.reason==='spreadsheet_history_preserved'&&body.reason==='issue_deleted';
+      if(data.ok===true&&(status==='succeeded'||status==='unchanged'||preservedDelete)){
+        return {ok:true,data:data,status:status,workbookSynced:true,pending:false,historyPreserved:preservedDelete,requestId:clientRequestId,attempts:attempt+1};
+      }
+      if(status==='busy'){
+        lastDetails={status:202,code:'SYNC_BUSY',message:'表格同步队列持续繁忙'};
+        if(attempt>=2)break;
+        var retrySeconds=Math.max(1,Math.min(10,Number(data.retryAfterSeconds)||2));
+        await workbookSyncDelay(retrySeconds*1000);
+        continue;
+      }
+      lastDetails=workbookSyncErrorDetails(null,data);
+      if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
+        await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
+        continue;
+      }
+      break;
+    }catch(error){
+      lastDetails=workbookSyncErrorDetails(error,{});
+      if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
+        await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
+        continue;
+      }
+      break;
+    }
+  }
+  // 表格同步是二次链路，不回滚已经成功保存的 Supabase 业务数据。
+  console.error('[商云宝] 工单表同步请求失败',lastDetails&&lastDetails.error||lastDetails);
+  setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
+  return {ok:false,status:'pending',workbookSynced:false,pending:true,error:lastDetails&&lastDetails.error||lastDetails,details:lastDetails,requestId:clientRequestId,attempts:attempts};
+}
+async function triggerWorkbookSyncCompensation(){
+  if(CLOUD_CONFIG.workbookSyncEnabled!==true||!STATE.user)return {ok:true,skipped:true,status:'disabled'};
+  var userId=String(STATE.user.userId||'');
+  if(!userId||workbookCompensationUserId===userId)return {ok:true,skipped:true,status:'already_attempted'};
+  workbookCompensationUserId=userId;
+  var result=await requestWorkbookSync('session_sync_compensation',{
+    mode:'drain',ownerUserId:userId,requestId:'drain:'+userId+':'+gid()
+  });
+  if(result.workbookSynced)setCloudStatus('业务云端已加载，Excel表已核对','var(--success)');
+  else if(result.pending)setCloudStatus('业务云端已加载，Excel表待补同步','var(--warning)');
+  return result;
+}
 
 function emptyUserData(){return {issues:[],knowledge:[],archives:[],dailySupps:{}}}
 function cloneJson(value){
@@ -388,10 +646,9 @@ function cloneJson(value){
 function normalizeUserData(d){
   d=d||{};
   var issues=Array.isArray(d.issues)?d.issues.filter(function(item){return item&&typeof item==='object'}).map(function(issue){
-    if(!Array.isArray(issue.followUps)) issue.followUps=[];
-    return issue;
+    return normalizeIssueContract(issue);
   }):[];
-  var archives=Array.isArray(d.archives)?d.archives.filter(function(item){return item&&typeof item==='object'}):[];
+  var archives=Array.isArray(d.archives)?d.archives.filter(function(item){return item&&typeof item==='object'}).map(function(item){return normalizeArchiveContract(cloneJson(item))}):[];
   // 兼容旧版归档：旧数据没有 sourceIssueId，按门店、问题和创建日期做一次一对一关联。
   var linkedIssueIds={};
   archives.forEach(function(item){if(item.sourceIssueId!==undefined&&item.sourceIssueId!==null)linkedIssueIds[String(item.sourceIssueId)]=true});
@@ -400,13 +657,27 @@ function normalizeUserData(d){
     var archiveCreated=String(item.originalCreatedAt||item.createdAt||'');
     var candidates=issues.filter(function(issue){
       if(linkedIssueIds[String(issue.id)])return false;
-      if(issue.progress!=='已完结')return false;
+      if(issue.currentStatus!=='已完结')return false;
       if(String(issue.shopName||'')!==String(item.shopName||''))return false;
       if(item.shopDesc!==undefined&&String(issue.shopDesc||'')!==String(item.shopDesc||''))return false;
-      if(item.priority!==undefined&&safePriority(issue.priority)!==safePriority(item.priority))return false;
+      if((item.urgency!==undefined||item.priority!==undefined)&&normalizeUrgency(issue.urgency,issue.priority)!==normalizeUrgency(item.urgency,item.priority))return false;
       return !archiveCreated||!issue.createdAt||String(issue.createdAt)===archiveCreated;
     });
     if(candidates.length===1){item.sourceIssueId=candidates[0].id;linkedIssueIds[String(candidates[0].id)]=true}
+  });
+  var issueById={};
+  issues.forEach(function(issue){issueById[String(issue.id)]=issue});
+  archives=archives.filter(function(item){
+    if(item.sourceIssueId===undefined||item.sourceIssueId===null)return true;
+    var linked=issueById[String(item.sourceIssueId)];
+    return !linked||linked.currentStatus==='已完结';
+  }).map(function(item){
+    var linked=item.sourceIssueId===undefined||item.sourceIssueId===null?null:issueById[String(item.sourceIssueId)];
+    if(linked&&linked.currentStatus==='已完结'&&!linked.completedAt&&item.completedAt)linked.completedAt=item.completedAt;
+    if(linked&&!linked.assigneeName&&isValidExcelAssignee(item.assigneeName)){
+      linked.assigneeName=normalizeAssigneeName(item.assigneeName);linked.assigneeId=String(item.assigneeId||'');
+    }
+    return linked?copyIssueContractToArchive(item,linked):item;
   });
   var knowledge=Array.isArray(d.knowledge)?d.knowledge.filter(function(item){return item&&typeof item==='object'&&!isDeprecatedKnowledgeSample(item)}):[];
   return {issues:issues,knowledge:knowledge,archives:archives,dailySupps:d.dailySupps&&typeof d.dailySupps==='object'?d.dailySupps:{}};
@@ -445,7 +716,7 @@ function mergeRecord(base,local,remote,kind,conflicts,recordKey){
     if(key==='followUps'&&kind==='issues'){
       merged.followUps=mergeFollowUps(base.followUps,local.followUps,remote.followUps);
     }else if(!jsonEqual(local[key],base[key])){
-      if(kind==='issues'&&['shopName','shopDesc','priority','deadline','progress'].indexOf(key)>=0&&
+      if(kind==='issues'&&['ticketNo','shopName','shopDesc','urgency','priority','assigneeId','assigneeName','deadline','progress','followStatus'].indexOf(key)>=0&&
         Object.prototype.hasOwnProperty.call(remote,key)&&!jsonEqual(remote[key],base[key])&&!jsonEqual(remote[key],local[key])){
         if(conflicts)conflicts.push({type:'field_conflict',collection:kind,key:recordKey,field:key});
       }
@@ -518,7 +789,7 @@ function mergeUserData(base,local,remote,conflicts){
   base=normalizeUserData(cloneJson(base||emptyUserData()));
   local=normalizeUserData(cloneJson(local||emptyUserData()));
   remote=normalizeUserData(cloneJson(remote||emptyUserData()));
-  var mergedIssues=mergeCollection(base.issues,local.issues,remote.issues,'issues',conflicts);
+  var mergedIssues=mergeCollection(base.issues,local.issues,remote.issues,'issues',conflicts).map(function(issue){return normalizeIssueContract(issue)});
   var mergedArchives=mergeCollection(base.archives,local.archives,remote.archives,'archives',conflicts);
   var issueMap={};
   mergedIssues.forEach(function(issue){issueMap[String(issue.id)]=issue});
@@ -526,10 +797,8 @@ function mergeUserData(base,local,remote,conflicts){
     if(archive.sourceIssueId===undefined||archive.sourceIssueId===null)return true;
     var issue=issueMap[String(archive.sourceIssueId)];
     if(!issue)return true;
-    if(issue.progress!=='已完结')return false;
-    archive.shopName=issue.shopName;archive.shopDesc=issue.shopDesc;archive.priority=issue.priority;
-    archive.createdAt=issue.createdAt||archive.createdAt||'';
-    archive.followUps=getIssueFollowUps(issue).slice();
+    if(issue.currentStatus!=='已完结')return false;
+    copyIssueContractToArchive(archive,issue);
     return true;
   });
   var archiveByIssue={};
@@ -537,18 +806,16 @@ function mergeUserData(base,local,remote,conflicts){
     if(archive.sourceIssueId!==undefined&&archive.sourceIssueId!==null)archiveByIssue[String(archive.sourceIssueId)]=archive;
   });
   mergedIssues.forEach(function(issue){
-    if(issue.progress!=='已完结'||archiveByIssue[String(issue.id)])return;
+    if(issue.currentStatus!=='已完结'||archiveByIssue[String(issue.id)])return;
     var historic=remote.archives.concat(base.archives).find(function(item){return String(item.sourceIssueId)===String(issue.id)});
-    var completionHistory=getIssueFollowUps(issue).filter(function(item){return item.toProgress==='已完结'&&item.createdAt}).sort(function(a,b){return String(b.createdAt).localeCompare(String(a.createdAt))});
+    var completionHistory=getIssueFollowUps(issue).filter(function(item){return (item.status==='已完结'||item.toProgress==='已完结')&&item.createdAt}).sort(function(a,b){return String(b.createdAt).localeCompare(String(a.createdAt))});
     var completionDate='';
     if(completionHistory.length){
       var completionTime=new Date(completionHistory[0].createdAt);
       if(!isNaN(completionTime.getTime()))completionDate=completionTime.getFullYear()+'-'+S(completionTime.getMonth()+1)+'-'+S(completionTime.getDate());
     }
-    var archive=historic?cloneJson(historic):{id:gid(),completedAt:completionDate||ts()};
-    archive.sourceIssueId=issue.id;archive.shopName=issue.shopName;archive.shopDesc=issue.shopDesc;
-    archive.priority=issue.priority;archive.createdAt=issue.createdAt||archive.createdAt||'';
-    archive.followUps=getIssueFollowUps(issue).slice();
+    var archive=historic?cloneJson(historic):{id:gid(),completedAt:completionDate||issue.completedAt||ts()};
+    copyIssueContractToArchive(archive,issue);
     mergedArchives.unshift(archive);archiveByIssue[String(issue.id)]=archive;
   });
   return {
@@ -563,6 +830,37 @@ function profileToUser(p){
 }
 function profileForUi(p){
   return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all,createdAt:(p.created_at||'').slice(0,10)};
+}
+function backfillOwnerAssignee(data,owner){
+  if(!data||!owner||!Array.isArray(data.issues))return data;
+  var issueById={};
+  var ownerName=normalizeAssigneeName(owner.name||'');
+  var canBackfill=isValidExcelAssignee(ownerName);
+  data.issues.forEach(function(issue){
+    if(!issue.assigneeName&&canBackfill)issue.assigneeName=ownerName;
+    if(!issue.assigneeId&&canBackfill&&issue.assigneeName===ownerName)issue.assigneeId=String(owner.userId||owner.id||'');
+    issueById[String(issue.id)]=issue;
+  });
+  if(Array.isArray(data.archives))data.archives=data.archives.map(function(archive){
+    var linked=archive&&archive.sourceIssueId!==undefined?issueById[String(archive.sourceIssueId)]:null;
+    return linked?copyIssueContractToArchive(archive,linked):normalizeArchiveContract(archive);
+  });
+  return data;
+}
+function findAssigneeByName(name){
+  name=normalizeAssigneeName(name);
+  if(!isValidExcelAssignee(name))return {id:'',name:''};
+  var profile=TEAM_PROFILES.find(function(item){return normalizeAssigneeName(item.name)===name});
+  if(!profile&&STATE.user&&normalizeAssigneeName(STATE.user.name)===name)profile=STATE.user;
+  return profile?{id:String(profile.userId||profile.id||''),name:name}:{id:'',name:name};
+}
+function assigneeOptionsHtml(selectedName){
+  selectedName=normalizeAssigneeName(selectedName);
+  var names=EXCEL_ASSIGNEE_NAMES.slice();
+  var invalidSelected=selectedName&&!isValidExcelAssignee(selectedName);
+  var html='<option value=""'+((!selectedName||invalidSelected)?' selected':'')+'>'+(invalidSelected?'需重新选择（原：'+esc(selectedName)+'）':'请选择')+'</option>';
+  names.forEach(function(name){html+='<option value="'+escAttr(name)+'"'+(name===selectedName?' selected':'')+'>'+esc(name)+'</option>'});
+  return html;
 }
 function isAdmin(user){return !!user&&user.role==='admin'}
 function canViewTeamData(user){return !!user&&(isAdmin(user)||user.canViewAll===true)}
@@ -632,13 +930,15 @@ async function loadUserData(){
     nextRevision=created.data.updated_at||'';
   }
   if(!STATE.user||STATE.user.userId!==userId)return;
+  backfillOwnerAssignee(nextData,STATE.user);
   STATE.data=nextData;
   cloudBaseline=cloneJson(nextData);
   cloudRevision=nextRevision;
 }
-function saveUserData(){
+function saveUserData(syncContext){
   if(!db||!STATE.user) return Promise.resolve(false);
   var userId=STATE.user.userId;
+  var workbookRequest=syncContext?Object.assign({requestId:gid(),ownerUserId:userId},syncContext):null;
   var snapshot=cloneJson(normalizeUserData(STATE.data));
   var baseSnapshot=cloneJson(normalizeUserData(cloudBaseline));
   var requestId=++latestSaveRequest;
@@ -654,7 +954,7 @@ function saveUserData(){
         if(inserted.error&&inserted.error.code!=='23505')throw inserted.error;
         continue;
       }
-      var remote=normalizeUserData(current.data.payload);
+      var remote=backfillOwnerAssignee(normalizeUserData(current.data.payload),STATE.user);
       var conflicts=[];
       var merged=mergeUserData(baseSnapshot,snapshot,remote,conflicts);
       var updated=await db.from('workbench_data').update({payload:merged})
@@ -667,8 +967,7 @@ function saveUserData(){
     throw new Error('检测到多设备同时保存，自动合并重试仍未成功');
   });
   saveQueue=task.catch(function(){});
-  return task.then(function(saved){
-    pendingSaves=Math.max(0,pendingSaves-1);
+  return task.then(async function(saved){
     if(STATE.user&&STATE.user.userId===userId){
       var formDraft=captureIssueFormDraft();
       var beforeMerge=dataSignature(STATE.data);
@@ -681,9 +980,18 @@ function saveUserData(){
       }
     }
     if(saved.conflicts&&saved.conflicts.length){
-      setCloudStatus('已同步，并保留另一设备的新记录','var(--warning)');
-    }else if(requestId===latestSaveRequest&&pendingSaves===0){setCloudStatus('已实时同步','var(--success)')}
-    return {ok:true,conflicts:saved.conflicts||[]};
+      setCloudStatus('业务云端已保存，并保留另一设备的新记录','var(--warning)');
+    }else if(requestId===latestSaveRequest&&pendingSaves<=1){setCloudStatus('业务云端已保存','var(--success)')}
+    var workbookSync=null;
+    if(workbookRequest){
+      setCloudStatus('业务云端已保存，正在同步Excel表…','var(--warning)');
+      workbookSync=await requestWorkbookSync(workbookRequest.reason||'workbench_data_saved',Object.assign({},workbookRequest,{revision:saved.updated_at||''}));
+      if(workbookSync.workbookSynced)setCloudStatus('业务云端已保存，Excel表已同步','var(--success)');
+      else if(workbookSync.skipped&&!workbookSync.pending)setCloudStatus('业务云端已保存，Excel表联动暂未启用','var(--warning)');
+      else setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
+    }
+    pendingSaves=Math.max(0,pendingSaves-1);
+    return {ok:true,businessSaved:true,conflicts:saved.conflicts||[],workbookSync:workbookSync,workbookSynced:!!(workbookSync&&workbookSync.workbookSynced)};
   }).catch(function(error){
     pendingSaves=Math.max(0,pendingSaves-1);
     console.error('[商云宝] 云端保存失败',error);
@@ -710,15 +1018,15 @@ function captureIssueFormDraft(){
   if(STATE.tab!=='issues') return null;
   var shop=document.getElementById('iss-shop'),desc=document.getElementById('iss-desc');
   var pri=document.getElementById('iss-pri'),deadline=document.getElementById('iss-deadline');
-  var progress=document.getElementById('iss-progress'),transcript=document.getElementById('voice-transcript');
-  if(!shop||!desc||!pri||!deadline||!progress) return null;
+  var assignee=document.getElementById('iss-assignee'),transcript=document.getElementById('voice-transcript');
+  if(!shop||!desc||!pri||!deadline||!assignee) return null;
   var active=document.activeElement,activeId=active&&active.id?active.id:'';
   var selectionStart=null,selectionEnd=null;
   if(active&&typeof active.selectionStart==='number'){
     selectionStart=active.selectionStart;selectionEnd=active.selectionEnd;
   }
   return {
-    shop:shop.value,desc:desc.value,pri:pri.value,deadline:deadline.value,progress:progress.value,
+    shop:shop.value,desc:desc.value,pri:pri.value,assignee:assignee.value,deadline:deadline.value,
     transcript:transcript?transcript.value:STATE.voiceText,
     activeId:activeId,selectionStart:selectionStart,selectionEnd:selectionEnd,
     editingIssueId:STATE.editingIssueId,editingIssueOwnerUserId:STATE.editingIssueOwnerUserId,
@@ -727,8 +1035,8 @@ function captureIssueFormDraft(){
 }
 function restoreIssueFormDraft(draft){
   if(!draft||STATE.tab!=='issues') return;
-  var values={'iss-shop':draft.shop,'iss-desc':draft.desc,'iss-pri':draft.pri,'iss-deadline':draft.deadline,'iss-progress':draft.progress,'voice-transcript':draft.transcript};
-  var fieldNames={'iss-shop':'shop','iss-desc':'desc','iss-pri':'pri','iss-deadline':'deadline','iss-progress':'progress'};
+  var values={'iss-shop':draft.shop,'iss-desc':draft.desc,'iss-pri':draft.pri,'iss-assignee':draft.assignee,'iss-deadline':draft.deadline,'voice-transcript':draft.transcript};
+  var fieldNames={'iss-shop':'shop','iss-desc':'desc','iss-pri':'pri','iss-assignee':'assignee','iss-deadline':'deadline'};
   var draftOwner=draft.editingIssueOwnerUserId||(STATE.user?STATE.user.userId:'');
   var currentOwner=STATE.editingIssueOwnerUserId||(STATE.user?STATE.user.userId:'');
   var sameEdit=draft.editingIssueId&&String(draft.editingIssueId)===String(STATE.editingIssueId||'')&&String(draftOwner)===String(currentOwner);
@@ -738,6 +1046,7 @@ function restoreIssueFormDraft(draft){
   });
   STATE.issueFormTouched=sameEdit?Object.assign({},draft.touched||{}):{};
   STATE.voiceText=draft.transcript||'';
+  updateNewIssueAutoPreview(draft.shop);
   if(draft.activeId){
     var active=document.getElementById(draft.activeId);
     if(active){
@@ -751,6 +1060,13 @@ function restoreIssueFormDraft(draft){
 function markIssueFieldTouched(field){
   if(!STATE.issueFormTouched)STATE.issueFormTouched={};
   STATE.issueFormTouched[field]=true;
+}
+function updateNewIssueAutoPreview(shopName){
+  if(STATE.editingIssueId)return;
+  var hasShop=String(shopName||'').trim()!=='';
+  var ticket=document.getElementById('iss-ticket'),created=document.getElementById('iss-created');
+  if(ticket)ticket.value=hasShop?'保存后由系统生成':'';
+  if(created)created.value=hasShop?ts():'';
 }
 function clearIssueEditState(){
   STATE.editingIssueId=null;
@@ -883,7 +1199,9 @@ async function loadImportedData(){
     if(row.user_id===activeUserId) return;
     var p=nextProfiles.find(function(item){return item.userId===row.user_id});
     if(!p) return;
-    nextImported[row.user_id]={name:p.name,department:p.department,data:normalizeUserData(row.payload),importedAt:(row.updated_at||'').slice(0,10)};
+    var memberData=normalizeUserData(row.payload);
+    backfillOwnerAssignee(memberData,p);
+    nextImported[row.user_id]={name:p.name,department:p.department,data:memberData,importedAt:(row.updated_at||'').slice(0,10)};
   });
   if(STATE.user&&STATE.user.userId===activeUserId){TEAM_PROFILES=nextProfiles;STATE.importedData=nextImported}
   if(permissionChanged)setTimeout(startRealtimeSync,0);
@@ -954,7 +1272,7 @@ function getTeamDailyEntries(date){
   for(var uid in STATE.importedData){
     var imp=STATE.importedData[uid];
     var data=imp.data||emptyUserData();
-    var archives=(Array.isArray(data.archives)?data.archives:[]).filter(function(item){return item.completedAt===date});
+    var archives=(Array.isArray(data.archives)?data.archives:[]).filter(function(item){return dateOnly(item.completedAt)===date});
     var note=data.dailySupps&&typeof data.dailySupps==='object'?String(data.dailySupps[date]||''):'';
     if(archives.length||note){result.push({ownerUserId:uid,ownerName:imp.name||'未知成员',ownerDept:imp.department||'',archives:archives,note:note})}
   }
@@ -968,7 +1286,7 @@ function getScopedIssues(){
   return useTeam ? getMergedIssues() : STATE.data.issues.slice();
 }
 function isIssueCompleted(issue){
-  return issue&&issue.progress==='已完结';
+  return !!issue&&deriveCurrentStatus(issue)==='已完结';
 }
 function getDashIssues(){
   return filterByDate(getScopedIssues());
@@ -981,7 +1299,7 @@ function filterByDate(arr){
   else if(STATE.dashRange==='30d'){start=tsOffset(-29);end=ts()}
   else if(STATE.dashRange==='custom'){start=STATE.dashStart;end=STATE.dashEnd}
   return arr.filter(function(item){
-    var d=item.createdAt||item.deadline||'';
+    var d=dateOnly(item.createdAt)||dateOnly(item.deadline)||'';
     return d>=start&&d<=end;
   });
 }
@@ -990,35 +1308,32 @@ function dashStats(){
   var issues = getDashIssues();
   var total=issues.length;
   var open=0,inProg=0,done=0,overdue=0;
-  var pt=new Date();pt.setHours(0,0,0,0);
   for(var i=0;i<issues.length;i++){
-    var s=issues[i].progress||'';
-    if(s==='已完结') done++;
-    else if(s==='未开始'||s==='') open++;
-    else if(s==='跟进中'||s==='阶段性完成') inProg++;
-    if(issues[i].deadline){
-      var dl=parseLocalDate(issues[i].deadline);dl.setHours(0,0,0,0);
-      if(dl<pt&&s!=='已完结') overdue++;
-    }
+    var s=deriveCurrentStatus(issues[i]);issues[i].currentStatus=s;
+    if(s==='已完结')done++;
+    else if(s==='已逾期')overdue++;
+    else if(s==='跟进中')inProg++;
+    else open++;
   }
   return {total:total,open:open,inProg:inProg,done:done,overdue:overdue};
 }
 function dashPieData(){
   var s=dashStats();
   return [
-    {label:'待开始',v:s.open,c:'#94a3b8'},
+    {label:'未跟进',v:s.open,c:'#94a3b8'},
     {label:'跟进中',v:s.inProg,c:'#2563eb'},
-    {label:'已完成',v:s.done,c:'#10b981'}
+    {label:'已完结',v:s.done,c:'#10b981'},
+    {label:'已逾期',v:s.overdue,c:'#ef4444'}
   ];
 }
 function dashBarData(){
   var issues=getDashIssues();
-  var counts={P0:0,P1:0,P2:0};
+  var counts={'紧急':0,'高':0,'普通':0,'低':0};
   for(var i=0;i<issues.length;i++){
-    var p=issues[i].priority||'';
-    if(p==='P0') counts.P0++;else if(p==='P1') counts.P1++;else counts.P2++;
+    var urgency=normalizeUrgency(issues[i].urgency,issues[i].priority);
+    counts[urgency]++;
   }
-  return [{label:'P0 紧急',v:counts.P0,c:'#ef4444'},{label:'P1 重要',v:counts.P1,c:'#f59e0b'},{label:'P2 普通',v:counts.P2,c:'#94a3b8'}];
+  return [{label:'紧急',v:counts['紧急'],c:'#ef4444'},{label:'高',v:counts['高'],c:'#f59e0b'},{label:'普通',v:counts['普通'],c:'#3b82f6'},{label:'低',v:counts['低'],c:'#94a3b8'}];
 }
 
 // ====== SVG 图表 ======
@@ -1047,7 +1362,7 @@ function svgPie(data){
 function svgBar(data){
   var max=Math.max.apply(null,data.map(function(d){return d.v}));
   if(max===0) max=1;
-  var w=260,h=140,barW=50,gap=30,pad=10;
+  var barW=44,gap=20,pad=10,w=Math.max(260,pad*2+data.length*barW+(data.length-1)*gap),h=140;
   var bars='';
   for(var i=0;i<data.length;i++){
     var bh=(data[i].v/max)*(h-40);
@@ -1063,23 +1378,24 @@ function svgBar(data){
 // ====== 未处理工单轮播（不受驾驶舱日期筛选影响） ======
 function getOpenWorkItems(){
   var items=[];
-  var today=new Date();today.setHours(0,0,0,0);
+  var today=ts();
   var issues=getScopedIssues();
   for(var i=0;i<issues.length;i++){
     var iss=issues[i];
     if(isIssueCompleted(iss)) continue;
     var type='pending';
     if(iss.deadline){
-      var dl=parseLocalDate(iss.deadline);dl.setHours(0,0,0,0);
-      if(dl<today) type='overdue';
-      else if(dl.getTime()===today.getTime()) type='today';
+      var deadlineDate=dateOnly(iss.deadline);
+      if(deadlineDate&&deadlineDate<today) type='overdue';
+      else if(deadlineDate===today) type='today';
     }
     items.push({issue:iss,type:type});
   }
-  var priOrder={P0:0,P1:1,P2:2};
+  var priOrder={'紧急':0,'高':1,'普通':2,'低':3};
   items.sort(function(a,b){
-    var ap=priOrder[a.issue.priority]===undefined?2:priOrder[a.issue.priority];
-    var bp=priOrder[b.issue.priority]===undefined?2:priOrder[b.issue.priority];
+    var aUrgency=normalizeUrgency(a.issue.urgency,a.issue.priority),bUrgency=normalizeUrgency(b.issue.urgency,b.issue.priority);
+    var ap=priOrder[aUrgency]===undefined?2:priOrder[aUrgency];
+    var bp=priOrder[bUrgency]===undefined?2:priOrder[bUrgency];
     if(ap!==bp) return ap-bp;
     if(a.type==='overdue'&&b.type!=='overdue') return -1;
     if(a.type!=='overdue'&&b.type==='overdue') return 1;
@@ -1091,7 +1407,7 @@ function getOpenWorkItems(){
 }
 
 function getOpenP0Issues(){
-  return getOpenWorkItems().filter(function(item){return item.issue.priority==='P0'});
+  return getOpenWorkItems().filter(function(item){return normalizeUrgency(item.issue.urgency,item.issue.priority)==='紧急'});
 }
 
 var workCarouselTimer=null;
@@ -1142,9 +1458,10 @@ async function clearSampleData(){
   if(!canStartMutation())return;
   STATE.data.issues = STATE.data.issues.filter(function(i){return !i._sample});
   STATE.data.knowledge = STATE.data.knowledge.filter(function(k){return !k._sample});
-  var saving=saveUserData();
+  var saving=saveUserData({reason:'sample_data_cleared',fullSync:true});
   renderApp();
-  T((await saving)?'示例数据已清除':'示例数据未保存，请重试');
+  var saved=await saving;
+  T(saved?businessWorkbookMessage('示例数据已清除',saved):'示例数据未保存，请重试');
 }
 
 // ====== 登录 / 注册 ======
@@ -1230,6 +1547,9 @@ async function startUserSession(authUser){
   await loadImportedData();
   renderApp();
   startRealtimeSync();
+  // 每次页面会话只触发一次服务端待同步补偿。后端支持 outbox/drain 时会清队列；
+  // 当前后端也可把它作为本用户全量一致性校验，避免用户保存后立即关页造成遗漏。
+  await triggerWorkbookSyncCompensation();
 }
 
 async function doRegister(){
@@ -1279,6 +1599,7 @@ async function doLogin(){
 }
 
 async function doLogout(){
+  if(pendingSaves>0){T('当前业务数据或Excel表仍在同步，请稍候再退出');return}
   if(!confirm('确定退出登录？')) return;
   stopVoiceRecognition(true);
   await saveQueue.catch(function(){});
@@ -1292,8 +1613,9 @@ async function doLogout(){
   STATE.pendingNewIssue=null;
   STATE.knowledgeQuery='';
   pendingHistoryOps={};
+  workbookCompensationUserId='';
   STATE.voiceText='';
-  STATE.voiceParsed={shop:'',desc:'',pri:'P2',deadline:''};
+  STATE.voiceParsed={shop:'',desc:'',pri:'普通',deadline:''};
   STATE.voiceDetected={shop:'',desc:'',pri:'',deadline:''};
   STATE.voiceParsedReady=false;
   STATE.voiceMissing=[];
@@ -1381,6 +1703,11 @@ function appendIssueHistory(issue,type,content,fromProgress,toProgress,options){
     fromProgress:fromProgress||'',toProgress:toProgress||'',
     authorId:STATE.user?STATE.user.userId:'',authorName:STATE.user?STATE.user.name:'',createdAt:options.createdAt||nowIso()
   };
+  entry.followUpId=String(entry.id);
+  entry.followedAt=entry.createdAt;
+  entry.followerId=String(options.followerId||entry.authorId);
+  entry.followerName=normalizeAssigneeName(options.followerName||entry.authorName);
+  if(entry.type==='follow_up')entry.status=safeFollowStatus(options.status||toProgress)||'跟进中';
   issue.followUps=getIssueFollowUps(issue).slice();
   var existingIndex=issue.followUps.findIndex(function(item){return String(item.id)===String(entry.id)});
   if(existingIndex>=0)issue.followUps[existingIndex]=entry;
@@ -1393,15 +1720,16 @@ function pendingHistoryOperation(key){
   return pendingHistoryOps[key];
 }
 function syncIssueArchiveForData(data,issue){
+  normalizeIssueContract(issue);
   data.archives=Array.isArray(data.archives)?data.archives:[];
   var issueId=String(issue.id);
-  if(issue.progress!=='已完结'){
+  if(issue.currentStatus!=='已完结'){
     data.archives=data.archives.filter(function(item){return String(item.sourceIssueId)!==issueId});
     return false;
   }
   var existing=data.archives.find(function(item){return String(item.sourceIssueId)===issueId});
-  var snapshot={sourceIssueId:issue.id,shopName:issue.shopName,shopDesc:issue.shopDesc,priority:issue.priority,completedAt:existing&&existing.completedAt?existing.completedAt:ts(),createdAt:issue.createdAt||'',followUps:getIssueFollowUps(issue).slice()};
-  if(existing){Object.keys(snapshot).forEach(function(key){existing[key]=snapshot[key]});return false}
+  var snapshot=copyIssueContractToArchive(existing||{},issue);
+  if(existing)return false;
   snapshot.id=gid();
   data.archives.unshift(snapshot);
   return true;
@@ -1445,22 +1773,26 @@ async function saveTeamIssueMutation(ownerUserId,issueId,mutation){
     var retryError=new Error('成员正在同时修改，自动重试仍未成功');retryError.code='concurrent_update';throw retryError;
   });
   saveQueue=task.catch(function(){});
-  return task.then(function(saved){
-    pendingSaves=Math.max(0,pendingSaves-1);
+  return task.then(async function(saved){
     var rpcResult=saved.result||{};
     if(STATE.user&&STATE.user.userId===activeAdminId&&isAdmin(STATE.user)&&STATE.importedData[ownerUserId]){
       if(rpcResult.payload){
-        STATE.importedData[ownerUserId].data=normalizeUserData(rpcResult.payload);
+        STATE.importedData[ownerUserId].data=backfillOwnerAssignee(normalizeUserData(rpcResult.payload),{userId:ownerUserId,name:STATE.importedData[ownerUserId].name});
       }else if(rpcResult.issue){
         var nextData=normalizeUserData(cloneJson(STATE.importedData[ownerUserId].data));
         var issueIndex=nextData.issues.findIndex(function(item){return String(item.id)===String(issueId)});
-        if(issueIndex>=0)nextData.issues[issueIndex]=cloneJson(rpcResult.issue);
+        if(issueIndex>=0)nextData.issues[issueIndex]=normalizeIssueContract(cloneJson(rpcResult.issue));
         STATE.importedData[ownerUserId].data=nextData;
       }
       STATE.importedData[ownerUserId].importedAt=String(rpcResult.updated_at||'').slice(0,10);
     }
-    setCloudStatus('已实时同步','var(--success)');
-    return {ok:true,metadata:{fieldConflict:!!rpcResult.conflict,conflict:rpcResult.conflict||null,issue:rpcResult.issue||null},retries:saved.retries||0};
+    setCloudStatus('业务云端已保存，正在同步Excel表…','var(--warning)');
+    var workbookSync=await requestWorkbookSync(mutation.syncReason||'team_issue_mutated',{requestId:mutation.syncRequestId||gid(),ownerUserId:ownerUserId,issueId:String(issueId),revision:rpcResult.updated_at||''});
+    if(workbookSync.workbookSynced)setCloudStatus('业务云端已保存，Excel表已同步','var(--success)');
+    else if(workbookSync.skipped&&!workbookSync.pending)setCloudStatus('业务云端已保存，Excel表联动暂未启用','var(--warning)');
+    else setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
+    pendingSaves=Math.max(0,pendingSaves-1);
+    return {ok:true,businessSaved:true,workbookSync:workbookSync,workbookSynced:!!workbookSync.workbookSynced,metadata:{fieldConflict:!!rpcResult.conflict,conflict:rpcResult.conflict||null,issue:rpcResult.issue||null},retries:saved.retries||0};
   }).catch(function(error){
     pendingSaves=Math.max(0,pendingSaves-1);
     console.error('[商云宝] 管理员保存团队工单失败',error);
@@ -1486,7 +1818,8 @@ function openIssueDetail(ownerUserId,issueId){
   if(!ref){T('该工单已删除或无权查看');return}
   STATE.issueDetail={
     ownerUserId:ref.ownerUserId,issueId:String(issueId),draftContent:'',
-    draftProgress:ref.issue.progress||'未开始',draftProgressTouched:false,saving:false,
+    draftProgress:safeFollowStatus(ref.issue.latestFollowUpStatus||ref.issue.progress)||'跟进中',draftProgressTouched:false,saving:false,
+    draftFollowerName:isValidExcelAssignee(ref.issue.assigneeName)?normalizeAssigneeName(ref.issue.assigneeName):'',
     pendingHistoryId:'',pendingHistoryCreatedAt:''
   };
   renderIssueDetailModal();
@@ -1497,32 +1830,42 @@ function updateIssueDetailProgress(value){
   STATE.issueDetail.draftProgress=value;
   STATE.issueDetail.draftProgressTouched=true;
 }
+function updateIssueDetailFollower(value){if(STATE.issueDetail)STATE.issueDetail.draftFollowerName=normalizeAssigneeName(value)}
 function renderIssueDetailModal(){
   var detail=STATE.issueDetail;
   if(!detail) return;
   var ref=findIssueRef(detail.ownerUserId,detail.issueId);
   if(!ref){STATE.issueDetail=null;var old=document.querySelector('.modal-mask');if(old)old.remove();T('该工单已删除或无权查看');return}
   var issue=ref.issue;
-  var history=getIssueFollowUps(issue).slice().sort(function(a,b){return String(b.createdAt||'').localeCompare(String(a.createdAt||''))});
+  normalizeIssueContract(issue);
+  var history=getIssueFollowUps(issue).slice().sort(function(a,b){
+    var byTime=String(b.followedAt||b.createdAt||'').localeCompare(String(a.followedAt||a.createdAt||''));
+    return byTime||String(b.followUpId||b.id||'').localeCompare(String(a.followUpId||a.id||''));
+  });
   var pri=safePriority(issue.priority);
-  var progress=issue.progress||'未开始';
-  var draftProgress=detail.draftProgressTouched?(detail.draftProgress||progress):progress;
+  var progress=issue.currentStatus||deriveCurrentStatus(issue);
+  var draftProgress=detail.draftProgressTouched?(safeFollowStatus(detail.draftProgress)||'跟进中'):(safeFollowStatus(issue.latestFollowUpStatus||issue.progress)||'跟进中');
   var h='<div class="issue-detail-header">';
   h+='<div><div style="font-size:11px;color:var(--text3);margin-bottom:3px">工单详情 · '+esc(ref.ownerName)+'</div><h3>'+esc(issue.shopName||'未知门店')+'</h3></div>';
   h+='<button class="icon-btn" aria-label="关闭工单详情" onclick="closeModal()">×</button></div>';
   h+='<div class="issue-detail-body">';
-  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px"><span class="badge badge-'+pri.toLowerCase()+'">'+pri+'</span><span class="badge '+(progress==='已完结'?'badge-completed':(progress==='未开始'?'badge-p2':'badge-progress'))+'">'+esc(progress)+'</span>';
+  h+='<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:11px"><span class="badge badge-'+pri.toLowerCase()+'">'+esc(issue.urgency)+'</span><span class="badge '+(progress==='已完结'?'badge-completed':(progress==='未跟进'?'badge-p2':'badge-progress'))+'">'+esc(progress)+'</span>';
   if(ref.readOnly)h+='<span class="badge badge-p2">团队只读</span>';
   h+='</div>';
   h+='<div class="issue-detail-grid">';
-  h+='<div class="issue-detail-field"><div class="idf-label">负责人</div><div class="idf-value">'+esc(ref.ownerName)+'</div></div>';
-  h+='<div class="issue-detail-field"><div class="idf-label">部门</div><div class="idf-value">'+esc(ref.ownerDept||'未填写')+'</div></div>';
-  h+='<div class="issue-detail-field"><div class="idf-label">截止日期</div><div class="idf-value">'+esc(issue.deadline||'未设置')+'</div></div>';
-  h+='<div class="issue-detail-field"><div class="idf-label">创建日期</div><div class="idf-value">'+esc(issue.createdAt||'未记录')+'</div></div>';
-  h+='<div class="issue-detail-field"><div class="idf-label">最后更新</div><div class="idf-value">'+esc(issue.updatedAt?formatDateTime(issue.updatedAt):(issue.createdAt||'未记录'))+'</div></div>';
-  h+='<div class="issue-detail-field"><div class="idf-label">历史记录</div><div class="idf-value">'+history.length+' 条</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">工单编号</div><div class="idf-value">'+esc(issue.ticketNo||'待生成')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">登记日期</div><div class="idf-value">'+esc(dateOnly(issue.createdAt)||'未记录')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">门店名称</div><div class="idf-value">'+esc(issue.shopName||'未填写')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">紧急程度</div><div class="idf-value">'+esc(issue.urgency||'未填写')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">跟进人</div><div class="idf-value">'+esc(assigneeDisplayName(issue.assigneeName))+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">最新跟进状态</div><div class="idf-value">'+esc(issue.latestFollowUpStatus||'未跟进')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">计划完成时间</div><div class="idf-value">'+esc(issue.deadline||'未设置')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">实际完结时间</div><div class="idf-value">'+esc(issue.completedAt?formatDateTime(issue.completedAt):'未完结')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">最新跟进时间</div><div class="idf-value">'+esc(issue.latestFollowUpAt?formatDateTime(issue.latestFollowUpAt):'暂无')+'</div></div>';
+  h+='<div class="issue-detail-field"><div class="idf-label">当前状态</div><div class="idf-value">'+esc(issue.currentStatus||'未跟进')+'</div></div>';
   h+='</div>';
   h+='<div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:5px">门店问题</div><div class="issue-detail-desc">'+esc(issue.shopDesc||'未填写问题描述')+'</div>';
+  h+='<div style="font-size:12px;font-weight:700;color:var(--text2);margin:10px 0 5px">最新跟进内容</div><div class="issue-detail-desc">'+esc(issue.latestFollowUpContent||'暂无跟进内容')+'</div>';
   h+='<div class="followup-title"><span>历史跟进记录（'+history.length+'）</span><span style="font-size:11px;color:var(--text3);font-weight:400">最新记录在上</span></div>';
   if(history.length===0){
     h+='<div class="empty" style="padding:18px 10px">暂无跟进记录。历史工单从第一次新增跟进开始记录。</div>';
@@ -1532,7 +1875,9 @@ function renderIssueDetailModal(){
       var item=history[i];
       var system=item.type==='status_change'||item.type==='created';
       h+='<div class="followup-item'+(system?' system':'')+'"><span class="followup-dot"></span>';
-      h+='<div class="followup-meta"><span>'+(system?'系统记录':'人工跟进')+'</span><span>'+esc(item.authorName||'未知操作人')+'</span><span>'+esc(formatDateTime(item.createdAt))+'</span>';
+      h+='<div class="followup-meta"><span>'+(system?'系统记录':'人工跟进')+'</span>';
+      if(!system)h+='<span>跟进人：'+esc(item.followerName||item.authorName||'未知')+'</span>';
+      h+='<span>操作人：'+esc(item.authorName||'未知操作人')+'</span><span>'+esc(formatDateTime(item.createdAt))+'</span>';
       if(item.fromProgress&&item.toProgress&&item.fromProgress!==item.toProgress)h+='<span>'+esc(item.fromProgress)+' → '+esc(item.toProgress)+'</span>';
       h+='</div><div class="followup-content">'+esc(item.content)+'</div></div>';
     }
@@ -1543,9 +1888,10 @@ function renderIssueDetailModal(){
   }else{
     h+='<div class="followup-form"><div style="font-size:13px;font-weight:700;margin-bottom:8px">新增跟进</div>';
     h+='<div class="form-group"><label>本次跟进内容</label><textarea id="followup-content" maxlength="1000" placeholder="例：已联系门店，技术人员正在远程排查……" oninput="updateIssueDetailDraft(this.value)">'+esc(detail.draftContent||'')+'</textarea></div>';
-    h+='<div class="form-row"><div class="form-group"><label>更新推进状态</label><select id="followup-progress" onchange="updateIssueDetailProgress(this.value)">'+
-      '<option value="未开始"'+(draftProgress==='未开始'?' selected':'')+'>未开始</option><option value="跟进中"'+(draftProgress==='跟进中'?' selected':'')+'>跟进中</option><option value="阶段性完成"'+(draftProgress==='阶段性完成'?' selected':'')+'>阶段性完成</option><option value="已完结"'+(draftProgress==='已完结'?' selected':'')+'>已完结</option></select></div>';
-    h+='<div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-block" id="followup-save-btn" onclick="addIssueFollowUp()">保存跟进记录</button></div></div></div>';
+    h+='<div class="form-row"><div class="form-group"><label>本次跟进人</label><select id="followup-follower" onchange="updateIssueDetailFollower(this.value)">'+assigneeOptionsHtml(detail.draftFollowerName||issue.assigneeName)+'</select></div>';
+    h+='<div class="form-group"><label>本次跟进状态</label><select id="followup-progress" onchange="updateIssueDetailProgress(this.value)">'+
+      '<option value="跟进中"'+(draftProgress==='跟进中'?' selected':'')+'>跟进中</option><option value="已完结"'+(draftProgress==='已完结'?' selected':'')+'>已完结</option></select></div>';
+    h+='</div><div class="form-group" style="display:flex;align-items:flex-end"><button class="btn btn-primary btn-block" id="followup-save-btn" onclick="addIssueFollowUp()">保存跟进记录</button></div></div>';
   }
   h+='<div class="modal-actions">';
   if(!ref.readOnly)h+='<button class="btn" onclick="editIssueFromDetail()">'+I.edit+' 编辑工单</button>';
@@ -1562,22 +1908,38 @@ async function addIssueFollowUp(){
   if(ref.readOnly){T('团队成员工单仅支持查看');return}
   var input=document.getElementById('followup-content');
   var progressEl=document.getElementById('followup-progress');
+  var followerEl=document.getElementById('followup-follower');
   var content=(input?input.value:detail.draftContent||'').trim();
   if(!content){T('请填写本次跟进内容');if(input)input.focus();return}
   var issue=ref.issue;
-  var nextProgress=progressEl?progressEl.value:(detail.draftProgress||issue.progress||'未开始');
-  var oldProgress=issue.progress||'未开始';
+  if(!isValidExcelAssignee(issue.assigneeName)){
+    T('请先编辑工单，从Excel名单中选择有效跟进人');
+    return;
+  }
+  var followerName=normalizeAssigneeName(followerEl?followerEl.value:detail.draftFollowerName||issue.assigneeName);
+  if(!isValidExcelAssignee(followerName)){
+    T('请从Excel名单中选择本次跟进人');
+    if(followerEl)followerEl.focus();
+    return;
+  }
+  detail.draftFollowerName=followerName;
+  var follower=findAssigneeByName(followerName);
+  if(!follower.id&&normalizeAssigneeName(issue.assigneeName)===followerName)follower.id=String(issue.assigneeId||'');
+  // 名单成员尚未注册客户台账号时仍保留稳定身份键，避免 followerId 错记成实际操作人。
+  if(!follower.id)follower.id='excel-assignee:'+followerName;
+  var nextProgress=safeFollowStatus(progressEl?progressEl.value:detail.draftProgress)||'跟进中';
+  var oldProgress=safeFollowStatus(issue.latestFollowUpStatus||issue.progress)||'跟进中';
   var before=JSON.parse(JSON.stringify(STATE.data));
   detail.saving=true;
   var saveBtn=document.getElementById('followup-save-btn');if(saveBtn){saveBtn.disabled=true;saveBtn.textContent='正在保存…'}
   if(!detail.pendingHistoryId){detail.pendingHistoryId=gid();detail.pendingHistoryCreatedAt=nowIso()}
   if(ref.ownerUserId!==STATE.user.userId){
     var requestedProgress=nextProgress;
-    var progressWasTouched=detail.draftProgressTouched;
     var teamSaved=await saveTeamIssueMutation(ref.ownerUserId,detail.issueId,{
-      patch:progressWasTouched?{progress:requestedProgress}:{},
-      history:{id:detail.pendingHistoryId,type:'follow_up',content:content},
-      expectedIssueUpdatedAt:issue.updatedAt||null
+      patch:{progress:requestedProgress},
+      history:{id:detail.pendingHistoryId,followUpId:detail.pendingHistoryId,type:'follow_up',content:content,status:requestedProgress,fromProgress:oldProgress,toProgress:requestedProgress,followedAt:detail.pendingHistoryCreatedAt,createdAt:detail.pendingHistoryCreatedAt,followerId:follower.id,followerName:follower.name,authorId:STATE.user.userId,authorName:STATE.user.name},
+      expectedIssueUpdatedAt:issue.updatedAt||null,
+      syncReason:'followup_created',syncRequestId:detail.pendingHistoryId
     });
     detail.saving=false;
     if(!teamSaved.ok){
@@ -1591,14 +1953,16 @@ async function addIssueFollowUp(){
     detail.draftProgressTouched=false;
     detail.pendingHistoryId='';detail.pendingHistoryCreatedAt='';
     renderApp();
-    T(teamSaved.metadata.fieldConflict?'跟进已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单跟进已同步云端');
+    T(businessWorkbookMessage(teamSaved.metadata.fieldConflict?'跟进已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单跟进已保存',teamSaved));
     return;
   }
-  appendIssueHistory(issue,'follow_up',content,oldProgress,nextProgress,{id:detail.pendingHistoryId,createdAt:detail.pendingHistoryCreatedAt});
+  appendIssueHistory(issue,'follow_up',content,oldProgress,nextProgress,{id:detail.pendingHistoryId,createdAt:detail.pendingHistoryCreatedAt,status:nextProgress,followerId:follower.id,followerName:follower.name});
   issue.progress=nextProgress;
+  issue.followStatus=nextProgress;
+  normalizeIssueContract(issue);
   if(oldProgress!=='已完结'&&nextProgress==='已完结') archiveIssue(issue);
-  if(oldProgress==='已完结'&&nextProgress!=='已完结') STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(issue.id)});
-  var ok=await saveUserData();
+  if(oldProgress==='已完结'&&nextProgress!=='已完结') syncIssueArchiveForData(STATE.data,issue);
+  var ok=await saveUserData({reason:'followup_created',requestId:detail.pendingHistoryId,issueId:String(issue.id)});
   if(!ok){
     STATE.data=before;
     detail.saving=false;
@@ -1616,7 +1980,7 @@ async function addIssueFollowUp(){
   detail.draftContent='';detail.draftProgress=nextProgress;detail.draftProgressTouched=false;detail.saving=false;
   detail.pendingHistoryId='';detail.pendingHistoryCreatedAt='';
   renderApp();
-  T(followUpDeleteConflict?'跟进已保存；另一设备曾删除此工单，因有新跟进已自动保留工单':(followUpFieldConflict?'跟进已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'跟进记录已同步云端'));
+  T(businessWorkbookMessage(followUpDeleteConflict?'跟进已保存；另一设备曾删除此工单，因有新跟进已自动保留工单':(followUpFieldConflict?'跟进已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'跟进记录已保存'),ok));
 }
 function editIssueFromDetail(){
   var detail=STATE.issueDetail;if(!detail)return;
@@ -1656,7 +2020,7 @@ function renderApp(){
   if(!isAdminUser&&STATE.tab==='team') STATE.tab='dashboard';
   var tabs=[
     {id:'dashboard',label:'驾驶舱',icon:I.dashboard},
-    {id:'issues',label:'问题排查',icon:I.alert},
+    {id:'issues',label:'工单登记与跟进',icon:I.alert},
     {id:'daily',label:'日报快照',icon:I.clipboard},
     {id:'knowledge',label:'知识速查',icon:I.book}
   ];
@@ -1748,14 +2112,14 @@ function renderTodayBar(){
     var cls=it.type==='overdue'?' overdue':'';
     var ownerPrefix=it.issue._fromMember?'['+it.issue._fromMember+'] ':'';
     var ownerUserId=it.issue._ownerUserId||(STATE.user?STATE.user.userId:'');
-    var slidePri=safePriority(it.issue.priority);
+    var slidePri=safePriority(it.issue.priority),slideUrgency=normalizeUrgency(it.issue.urgency,it.issue.priority);
     h+='<div class="ti-slide'+cls+(i===0?' active':'')+'" data-carousel-index="'+i+'">';
-    h+='<span class="ti-pri '+slidePri+'">'+slidePri+'</span>';
+    h+='<span class="ti-pri '+slidePri+'">'+esc(slideUrgency)+'</span>';
     h+='<div class="ti-slide-main">';
     h+='<div class="ti-slide-title"><span class="ti-text">'+esc(ownerPrefix+(it.issue.shopName||'未知门店'))+'</span></div>';
     h+='<div class="ti-slide-desc">'+esc(it.issue.shopDesc||'未填写门店问题')+'</div>';
-    h+='<div class="ti-slide-meta"><span>状态：'+esc(it.issue.progress||'未开始')+'</span>';
-    h+='<span>截止：'+esc(it.issue.deadline||'未设置')+'</span>';
+    h+='<div class="ti-slide-meta"><span>状态：'+esc(deriveCurrentStatus(it.issue))+'</span>';
+    h+='<span>计划完成：'+esc(it.issue.deadline||'未设置')+'</span>';
     if(it.type==='overdue') h+='<span style="font-weight:700">已逾期</span>';
     else if(it.type==='today') h+='<span style="color:var(--warn);font-weight:700">今日截止</span>';
     h+='</div></div>';
@@ -1805,30 +2169,29 @@ function renderDashboard(){
   h+='</div>';
 
   // KPIs
-  var totalLabel=canViewTeamData(STATE.user)&&STATE.dashScope==='team'?'团队总问题':'我的问题';
   h+='<div class="kpi-row">';
-  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--primary)">'+s.total+'</div><div class="kpi-label">'+totalLabel+'</div></div>';
-  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--warn)">'+(s.open+s.inProg)+'</div><div class="kpi-label">待处理</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--primary)">'+s.inProg+'</div><div class="kpi-label">跟进中</div></div>';
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--success)">'+s.done+'</div><div class="kpi-label">已完结</div></div>';
+  h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--warn)">'+s.open+'</div><div class="kpi-label">未跟进</div></div>';
   h+='<div class="kpi-card"><div class="kpi-val" style="color:var(--danger)">'+s.overdue+'</div><div class="kpi-label">已逾期</div></div>';
   h+='</div>';
 
-  // P0 工单明细：显示当前统计范围内的所有未完成 P0，不受日期筛选影响。
+  // 紧急工单明细：显示当前统计范围内的所有未完结紧急工单，不受日期筛选影响。
   var openP0=getOpenP0Issues();
   h+='<div class="card p0-panel">';
-  h+='<div class="p0-panel-title"><strong>P0 紧急工单（'+openP0.length+'）</strong>';
+  h+='<div class="p0-panel-title"><strong>紧急工单（'+openP0.length+'）</strong>';
   h+='<span style="font-size:11px;color:var(--text3)">全部未完成 · 不受日期筛选影响</span></div>';
   if(openP0.length===0){
-    h+='<div style="font-size:13px;color:var(--text3);padding:8px 0">当前没有未完成的 P0 工单</div>';
+    h+='<div style="font-size:13px;color:var(--text3);padding:8px 0">当前没有未完结的紧急工单</div>';
   }else{
     for(var pi=0;pi<openP0.length;pi++){
       var p0Item=openP0[pi],p0=p0Item.issue;
       var p0OwnerUserId=p0._ownerUserId||(STATE.user?STATE.user.userId:'');
       h+='<div class="p0-work-order">';
       h+='<div class="p0-work-order-top"><span class="p0-work-order-shop">'+esc((p0._fromMember?'['+p0._fromMember+'] ':'')+(p0.shopName||'未知门店'))+'</span>';
-      h+='<span class="badge badge-p0">P0</span></div>';
+      h+='<span class="badge badge-p0">紧急</span></div>';
       h+='<div class="p0-work-order-desc">'+esc(p0.shopDesc||'未填写门店问题')+'</div>';
-      h+='<div class="p0-work-order-meta"><span>状态：'+esc(p0.progress||'未开始')+'</span><span>截止：'+esc(p0.deadline||'未设置')+'</span>';
+      h+='<div class="p0-work-order-meta"><span>状态：'+esc(deriveCurrentStatus(p0))+'</span><span>计划完成：'+esc(p0.deadline||'未设置')+'</span>';
       if(p0Item.type==='overdue') h+='<span style="color:var(--danger);font-weight:700">已逾期</span>';
       if(p0._fromDept) h+='<span>部门：'+esc(p0._fromDept)+'</span>';
       h+='<button class="btn btn-xs btn-primary" style="margin-left:auto" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(p0OwnerUserId)+'\'),decodeURIComponent(\''+inlineArg(p0.id)+'\'))">'+(p0._fromMember?'查看详情':'详情 / 跟进')+'</button>';
@@ -1839,8 +2202,8 @@ function renderDashboard(){
 
   // Charts
   h+='<div class="chart-row">';
-  h+='<div class="chart-box"><div class="chart-ttl">问题状态分布</div>'+svgPie(pie)+'</div>';
-  h+='<div class="chart-box"><div class="chart-ttl">优先级分布</div>'+svgBar(bar)+'</div>';
+  h+='<div class="chart-box"><div class="chart-ttl">工单状态分布</div>'+svgPie(pie)+'</div>';
+  h+='<div class="chart-box"><div class="chart-ttl">紧急程度分布</div>'+svgBar(bar)+'</div>';
   h+='</div>';
 
   // 统计口径说明
@@ -1850,7 +2213,7 @@ function renderDashboard(){
     if(STATE.dashScope==='team'){
       h+='当前为全团队统计：我的 '+STATE.data.issues.length+' 条 + 其他成员 '+memberIssueCount+' 条。';
     }else{
-      h+='当前仅统计我的数据，不包含其他成员的 '+memberIssueCount+' 条问题。';
+      h+='当前仅统计我的数据，不包含其他成员的 '+memberIssueCount+' 条工单。';
     }
     h+='“清空我的数据”不会删除其他成员数据。';
     h+='</div>';
@@ -1859,9 +2222,9 @@ function renderDashboard(){
   return h;
 }
 
-// ====== 问题排查 ======
+// ====== 工单登记与跟进 ======
 function renderIssues(){
-  var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 问题排查台</div>';
+  var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 工单登记与跟进</div>';
 
   // 语音转文字工作区：先实时转写和人工校对，再识别拆分到工单字段。
   h+='<div class="card" style="border:2px dashed #fca5a5;background:var(--danger2);margin-bottom:12px">';
@@ -1874,10 +2237,10 @@ function renderIssues(){
   h+='<button class="btn btn-sm" onclick="clearVoiceTranscript()">清空文字</button>';
   h+='</div>';
   h+='<div class="voice-transcript-label"><span>语音转文字（可编辑）</span><span class="voice-status" id="voice-status">等待录音，或直接输入文字</span></div>';
-  h+='<textarea class="voice-transcript" id="voice-transcript" placeholder="示例：门店名称杭州西湖店，门店问题收银系统无法结账，P0紧急，截止明天。" oninput="updateVoiceText(this.value)">'+esc(STATE.voiceText)+'</textarea>';
+  h+='<textarea class="voice-transcript" id="voice-transcript" placeholder="示例：门店名称杭州西湖店，门店问题收银系统无法结账，紧急程度为紧急，计划明天完成。" oninput="updateVoiceText(this.value)">'+esc(STATE.voiceText)+'</textarea>';
   if(STATE.voiceParsedReady){
     var vd=STATE.voiceDetected||{shop:'',desc:'',pri:'',deadline:''};
-    h+='<div class="voice-mapped">已识别：门店 '+esc(vd.shop||'待确认')+'；问题 '+esc(vd.desc||'待确认')+'；紧急程度 '+esc(vd.pri||'待确认')+'；截止 '+esc(vd.deadline||'待确认')+'。请在下方表单复核。</div>';
+    h+='<div class="voice-mapped">已识别：门店 '+esc(vd.shop||'待确认')+'；问题 '+esc(vd.desc||'待确认')+'；紧急程度 '+esc(vd.pri||'待确认')+'；计划完成 '+esc(vd.deadline||'待确认')+'。请在下方表单复核。</div>';
     if(STATE.voiceMissing&&STATE.voiceMissing.length) h+='<div class="voice-mapped" style="background:var(--warn2);color:#92400e">未能确定：'+esc(STATE.voiceMissing.join('、'))+'，请人工确认。</div>';
   }
   h+='</div>';
@@ -1889,81 +2252,81 @@ function renderIssues(){
   var isTeamEditing=!!(editingRef&&STATE.user&&editingRef.ownerUserId!==STATE.user.userId);
   h+='<div class="card">';
   h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
-  h+='<span style="font-weight:700;font-size:14px">'+(STATE.editingIssueId?(isTeamEditing?'管理员编辑 · '+esc(editingRef.ownerName):'编辑问题'):'新增问题')+'</span>';
+  h+='<span style="font-weight:700;font-size:14px">'+(STATE.editingIssueId?(isTeamEditing?'管理员编辑 · '+esc(editingRef.ownerName):'编辑工单'):'新建工单')+'</span>';
   if(STATE.editingIssueId) h+='<button class="btn btn-xs" onclick="cancelIssueEdit()">取消编辑</button>';
   h+='</div>';
   if(isTeamEditing)h+='<div class="readonly-note" style="margin:0 0 10px">正在修改 '+esc(editingRef.ownerName)+' 的工单；保存时只更新本次改动字段，并保留成员同时更新的其他数据。</div>';
   // 确定表单初始值：编辑模式用已有数据，新增模式用语音解析或默认值
-  var vp = STATE.voiceParsed || {shop:'', desc:'', pri:'P2', deadline:''};
+  var vp = STATE.voiceParsed || {shop:'', desc:'', pri:'普通', deadline:''};
   var formShop = STATE.editingIssueId ? editingIssue.shopName : vp.shop;
   var formDesc = STATE.editingIssueId ? editingIssue.shopDesc : vp.desc;
-  var formPri  = STATE.editingIssueId ? editingIssue.priority : (vp.pri||'P2');
+  var formUrgency = STATE.editingIssueId ? normalizeUrgency(editingIssue.urgency,editingIssue.priority) : normalizeUrgency(vp.pri||'普通');
+  var defaultAssignee=STATE.user&&EXCEL_ASSIGNEE_NAMES.indexOf(normalizeAssigneeName(STATE.user.name))>=0?normalizeAssigneeName(STATE.user.name):'';
+  var formAssignee = STATE.editingIssueId ? normalizeAssigneeName(editingIssue.assigneeName) : defaultAssignee;
   var formDl   = STATE.editingIssueId ? editingIssue.deadline : (vp.deadline||tsOffset(7));
-  var formProg = STATE.editingIssueId ? editingIssue.progress : '未开始';
-  h+='<div class="form-group"><label>门店名称</label><input id="iss-shop" placeholder="如：华东区-杭州西湖店" value="'+escAttr(formShop)+'" oninput="markIssueFieldTouched(\'shop\')"></div>';
+  var formTicketNo=STATE.editingIssueId?(editingIssue.ticketNo||'待生成'):(formShop?'保存后由系统生成':'');
+  var formCreatedAt=STATE.editingIssueId?(dateOnly(editingIssue.createdAt)||'未记录'):(formShop?ts():'');
+  var formStatus=STATE.editingIssueId?deriveCurrentStatus(editingIssue):'未跟进';
+  h+='<div class="form-row3">';
+  h+='<div class="form-group"><label>工单编号</label><input id="iss-ticket" value="'+escAttr(formTicketNo)+'" readonly></div>';
+  h+='<div class="form-group"><label>登记日期</label><input id="iss-created" value="'+escAttr(formCreatedAt)+'" readonly></div>';
+  h+='<div class="form-group"><label>当前状态（自动）</label><input id="iss-current-status" value="'+escAttr(formStatus)+'" readonly></div>';
+  h+='</div>';
+  h+='<div class="form-group"><label>门店名称</label><input id="iss-shop" placeholder="如：华东区-杭州西湖店" value="'+escAttr(formShop)+'" oninput="markIssueFieldTouched(\'shop\');updateNewIssueAutoPreview(this.value)"></div>';
   h+='<div class="form-group"><label>门店问题</label><textarea id="iss-desc" placeholder="描述遇到的问题" oninput="markIssueFieldTouched(\'desc\')">'+esc(formDesc)+'</textarea></div>';
   h+='<div class="form-row3">';
-  h+='<div class="form-group"><label>优先级</label><select id="iss-pri" onchange="markIssueFieldTouched(\'pri\')">'+
-    '<option value="P0"'+((formPri==='P0')?' selected':'')+'>P0 紧急</option>'+
-    '<option value="P1"'+((formPri==='P1')?' selected':'')+'>P1 重要</option>'+
-    '<option value="P2"'+((formPri==='P2')?' selected':'')+'>P2 普通</option></select></div>';
-  h+='<div class="form-group"><label>截止日期</label><input type="date" id="iss-deadline" value="'+escAttr(formDl)+'" onchange="markIssueFieldTouched(\'deadline\')"></div>';
-  h+='<div class="form-group"><label>推进进度</label><select id="iss-progress" onchange="markIssueFieldTouched(\'progress\')">'+
-    '<option value="未开始"'+(formProg==='未开始'?' selected':'')+'>未开始</option>'+
-    '<option value="跟进中"'+(formProg==='跟进中'?' selected':'')+'>跟进中</option>'+
-    '<option value="阶段性完成"'+(formProg==='阶段性完成'?' selected':'')+'>阶段性完成</option>'+
-    '<option value="已完结"'+(formProg==='已完结'?' selected':'')+'>已完结</option></select></div>';
+  h+='<div class="form-group"><label>紧急程度</label><select id="iss-pri" onchange="markIssueFieldTouched(\'pri\')">'+
+    '<option value="紧急"'+((formUrgency==='紧急')?' selected':'')+'>紧急</option>'+
+    '<option value="高"'+((formUrgency==='高')?' selected':'')+'>高</option>'+
+    '<option value="普通"'+((formUrgency==='普通')?' selected':'')+'>普通</option>'+
+    '<option value="低"'+((formUrgency==='低')?' selected':'')+'>低</option></select></div>';
+  h+='<div class="form-group"><label>跟进人</label><select id="iss-assignee" onchange="markIssueFieldTouched(\'assignee\')">'+assigneeOptionsHtml(formAssignee)+'</select></div>';
+  h+='<div class="form-group"><label>计划完成时间</label><input type="date" id="iss-deadline" value="'+escAttr(formDl)+'" onchange="markIssueFieldTouched(\'deadline\')"></div>';
   h+='</div>';
   h+='<button class="btn btn-primary btn-sm" onclick="'+(STATE.editingIssueId?'updateIssue()':'addIssue()')+'">'+
-    (STATE.editingIssueId?'保存修改':'添加问题')+'</button>';
+    (STATE.editingIssueId?'保存修改':'登记工单')+'</button>';
   h+='</div>';
 
   // List
   var issues = STATE.data.issues.slice();
   issues.sort(function(a,b){
-    var po={'P0':0,'P1':1,'P2':2};
-    var pa=po[a.priority]===undefined?2:po[a.priority],pb=po[b.priority]===undefined?2:po[b.priority];
+    var po={'紧急':0,'高':1,'普通':2,'低':3};
+    var pa=po[a.urgency]===undefined?2:po[a.urgency],pb=po[b.urgency]===undefined?2:po[b.urgency];
     if(pa!==pb) return pa-pb;
     return (a.deadline||'').localeCompare(b.deadline||'');
   });
-  h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的问题（'+issues.length+'）</div>';
+  h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的工单（'+issues.length+'）</div>';
 
   if(issues.length===0){
-    h+='<div class="empty">当前没有我的问题。拥有全数据查看权限时，驾驶舱中的其他问题可能来自团队成员。</div>';
+    h+='<div class="empty">当前没有我的工单。拥有全数据查看权限时，驾驶舱中的其他工单可能来自团队成员。</div>';
   } else {
     for(var i=0;i<issues.length;i++){
       var iss=issues[i];
+      normalizeIssueContract(iss);
       var issuePri=safePriority(iss.priority);
-      var isOverdue=false;
-      if(iss.deadline&&iss.progress!=='已完结'){
-        var dl=parseLocalDate(iss.deadline);dl.setHours(0,0,0,0);
-        var now=new Date();now.setHours(0,0,0,0);
-        if(dl<now) isOverdue=true;
-      }
+      var issueStatus=iss.currentStatus||deriveCurrentStatus(iss);
+      var isOverdue=issueStatus==='已逾期';
       var progCls='badge-progress';
-      if(iss.progress==='已完结') progCls='badge-completed';
-      else if(iss.progress==='未开始') progCls='badge-p2';
+      if(issueStatus==='已完结') progCls='badge-completed';
+      else if(issueStatus==='未跟进') progCls='badge-p2';
       h+='<div class="issue-card'+(isOverdue?' overdue':'')+'">';
       h+='<div class="ic-top">';
       h+='<span class="ic-store">'+esc(iss.shopName||'未知门店')+'</span>';
       h+='<div style="display:flex;gap:4px;flex-shrink:0">';
-      h+='<span class="badge badge-'+issuePri.toLowerCase()+'">'+issuePri+'</span>';
-      h+='<span class="badge '+progCls+'">'+esc(iss.progress||'未开始')+'</span>';
+      h+='<span class="badge badge-'+issuePri.toLowerCase()+'">'+esc(iss.urgency)+'</span>';
+      h+='<span class="badge '+progCls+'">'+esc(issueStatus)+'</span>';
       h+='</div></div>';
       h+='<div class="ic-desc">'+esc(iss.shopDesc||'')+'</div>';
       h+='<div class="ic-meta">';
-      h+='<span>截止：'+esc(iss.deadline||'未设置')+'</span>';
-      h+='<span>创建：'+esc(iss.createdAt||'')+'</span>';
+      h+='<span>编号：'+esc(iss.ticketNo||'待生成')+'</span>';
+      h+='<span>跟进人：'+esc(assigneeDisplayName(iss.assigneeName))+'</span>';
+      h+='<span>计划完成：'+esc(iss.deadline||'未设置')+'</span>';
+      h+='<span>登记：'+esc(dateOnly(iss.createdAt)||'未记录')+'</span>';
       h+='<span>历史跟进：'+getIssueFollowUps(iss).length+' 条</span>';
       if(iss._sample) h+='<span style="color:var(--warn)">示例</span>';
       if(isOverdue) h+='<span style="color:var(--danger);font-weight:600">已逾期!</span>';
       h+='</div>';
       h+='<div class="ic-actions">';
-      h+='<select style="font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:4px" onchange="changeProgress(decodeURIComponent(\''+inlineArg(iss.id)+'\'),this.value)">'+
-        '<option value="未开始"'+(iss.progress==='未开始'?' selected':'')+'>未开始</option>'+
-        '<option value="跟进中"'+(iss.progress==='跟进中'?' selected':'')+'>跟进中</option>'+
-        '<option value="阶段性完成"'+(iss.progress==='阶段性完成'?' selected':'')+'>阶段性完成</option>'+
-        '<option value="已完结"'+(iss.progress==='已完结'?' selected':'')+'>已完结</option></select>';
       h+='<button class="btn btn-xs btn-primary" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(STATE.user.userId)+'\'),decodeURIComponent(\''+inlineArg(iss.id)+'\'))">详情 / 跟进</button>';
       h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(iss.id)+'\'))">'+I.edit+' 编辑</button>';
       h+='<button class="btn btn-xs btn-outline-danger" onclick="deleteIssue(decodeURIComponent(\''+inlineArg(iss.id)+'\'))">'+I.trash+'</button>';
@@ -1975,29 +2338,24 @@ function renderIssues(){
   if(canViewTeamData(STATE.user)){
     var teamIssues=getMergedIssues().filter(function(item){return !!item._fromMember});
     teamIssues.sort(function(a,b){return (a.deadline||'').localeCompare(b.deadline||'')});
-    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员问题（'+teamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">'+(isAdmin(STATE.user)?'管理员可修改，删除仍需成员本人操作':'全数据查看权限仅支持只读')+'</span></div>';
+    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员工单（'+teamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">'+(isAdmin(STATE.user)?'管理员可修改，删除仍需成员本人操作':'全数据查看权限仅支持只读')+'</span></div>';
     if(teamIssues.length===0){
-      h+='<div class="empty">当前没有团队成员问题</div>';
+      h+='<div class="empty">当前没有团队成员工单</div>';
     }else{
       for(var ti=0;ti<teamIssues.length;ti++){
         var teamIssue=teamIssues[ti];
+        normalizeIssueContract(teamIssue);
         var teamPri=safePriority(teamIssue.priority);
         var teamOwnerUserId=teamIssue._ownerUserId||'';
-        var teamProgCls=teamIssue.progress==='已完结'?'badge-completed':(teamIssue.progress==='未开始'?'badge-p2':'badge-progress');
+        var teamStatus=teamIssue.currentStatus||deriveCurrentStatus(teamIssue);
+        var teamProgCls=teamStatus==='已完结'?'badge-completed':(teamStatus==='未跟进'?'badge-p2':'badge-progress');
         h+='<div class="issue-card" style="border-left:3px solid var(--primary)">';
         h+='<div class="ic-top"><span class="ic-store">'+esc(teamIssue.shopName||'未知门店')+'</span><div style="display:flex;gap:4px;flex-shrink:0">';
-        h+='<span class="badge badge-'+teamPri.toLowerCase()+'">'+teamPri+'</span>';
-        h+='<span class="badge '+teamProgCls+'">'+esc(teamIssue.progress||'未开始')+'</span></div></div>';
+        h+='<span class="badge badge-'+teamPri.toLowerCase()+'">'+esc(teamIssue.urgency)+'</span>';
+        h+='<span class="badge '+teamProgCls+'">'+esc(teamStatus)+'</span></div></div>';
         h+='<div class="ic-desc">'+esc(teamIssue.shopDesc||'')+'</div>';
-        h+='<div class="ic-meta"><span>成员：'+esc(teamIssue._fromMember||'')+'</span><span>部门：'+esc(teamIssue._fromDept||'未填写')+'</span><span>截止：'+esc(teamIssue.deadline||'未设置')+'</span><span>历史跟进：'+getIssueFollowUps(teamIssue).length+' 条</span></div>';
+        h+='<div class="ic-meta"><span>编号：'+esc(teamIssue.ticketNo||'待生成')+'</span><span>跟进人：'+esc(assigneeDisplayName(teamIssue.assigneeName))+'</span><span>数据所属：'+esc(teamIssue._fromMember||'')+'</span><span>计划完成：'+esc(teamIssue.deadline||'未设置')+'</span><span>历史跟进：'+getIssueFollowUps(teamIssue).length+' 条</span></div>';
         h+='<div class="ic-actions">';
-        if(isAdmin(STATE.user)){
-          h+='<select style="font-size:13px;padding:4px 8px;border:1px solid var(--border);border-radius:4px" onchange="changeProgress(decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'),this.value,decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'))">'+
-            '<option value="未开始"'+(teamIssue.progress==='未开始'?' selected':'')+'>未开始</option>'+
-            '<option value="跟进中"'+(teamIssue.progress==='跟进中'?' selected':'')+'>跟进中</option>'+
-            '<option value="阶段性完成"'+(teamIssue.progress==='阶段性完成'?' selected':'')+'>阶段性完成</option>'+
-            '<option value="已完结"'+(teamIssue.progress==='已完结'?' selected':'')+'>已完结</option></select>';
-        }
         h+='<button class="btn btn-xs" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'),decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'))">查看详情</button>';
         if(isAdmin(STATE.user))h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'),decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'))">'+I.edit+' 编辑</button>';
         h+='</div>';
@@ -2016,44 +2374,51 @@ function findIssue(id){
 async function addIssue(){
   var shop=document.getElementById('iss-shop').value.trim();
   var desc=document.getElementById('iss-desc').value.trim();
-  var pri=document.getElementById('iss-pri').value;
+  var urgency=normalizeUrgency(document.getElementById('iss-pri').value);
+  var assigneeName=normalizeAssigneeName(document.getElementById('iss-assignee').value);
   var dl=document.getElementById('iss-deadline').value;
-  var prog=document.getElementById('iss-progress').value;
   if(!shop){T('请填写门店名称');return}
+  if(!desc){T('请填写门店问题');return}
+  if(!isValidExcelAssignee(assigneeName)){T('请从Excel名单中选择有效跟进人');return}
   if(!canStartMutation())return;
   var formDraft=captureIssueFormDraft();
   var before=cloneJson(STATE.data);
   if(!STATE.pendingNewIssue){
-    STATE.pendingNewIssue={issueId:gid(),createdAt:ts(),historyId:gid(),historyCreatedAt:nowIso()};
+    STATE.pendingNewIssue={issueId:gid(),createdAt:ts(),ticketNumberCreatedAt:nowIso(),historyId:gid(),historyCreatedAt:nowIso()};
   }
   var pending=STATE.pendingNewIssue;
+  if(CLOUD_CONFIG.ticketNumberingEnabled===true&&!pending.ticketNo){
+    pending.ticketNo=await allocateTicketNo(pending.issueId,pending.ticketNumberCreatedAt||pending.createdAt);
+    if(!pending.ticketNo){T('工单编号未能生成，已停止保存，请稍后重试');return}
+  }
   var issue=findIssue(pending.issueId);
   var existed=!!issue.id;
-  var wasDone=existed&&issue.progress==='已完结';
   if(!existed){issue={id:pending.issueId,createdAt:pending.createdAt,followUps:[]};STATE.data.issues.unshift(issue)}
-  issue.shopName=shop;issue.shopDesc=desc;issue.priority=pri;issue.deadline=dl;issue.progress=prog;
-  appendIssueHistory(issue,'created','创建工单，初始状态：'+prog,'',prog,{id:pending.historyId,createdAt:pending.historyCreatedAt});
+  var assignee=findAssigneeByName(assigneeName);
+  issue.ticketNo=pending.ticketNo||issue.ticketNo||'';
+  issue.shopName=shop;issue.shopDesc=desc;issue.urgency=urgency;issue.priority=urgencyToPriority(urgency);
+  issue.assigneeId=assignee.id;issue.assigneeName=assignee.name;issue.deadline=dl;issue.progress='未开始';
+  appendIssueHistory(issue,'created','登记工单，当前状态：未跟进','','',{id:pending.historyId,createdAt:pending.historyCreatedAt});
+  normalizeIssueContract(issue);
   if(existed)issue.updatedAt=nowIso();
-  STATE.voiceParsed = {shop:'', desc:'', pri:'P2', deadline:''};
+  STATE.voiceParsed = {shop:'', desc:'', pri:'普通', deadline:''};
   STATE.voiceDetected = {shop:'', desc:'', pri:'', deadline:''};
   STATE.voiceText = '';
   STATE.voiceParsedReady = false;
   STATE.voiceMissing = [];
   STATE.issueFormTouched={};
-  if(!wasDone&&prog==='已完结') archiveIssue(issue);
-  if(wasDone&&prog!=='已完结')STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(issue.id)});
-  var saving=saveUserData();
+  var saving=saveUserData({reason:'issue_created',requestId:pending.historyId,issueId:String(issue.id)});
   renderApp();
   var saved=await saving;
   if(saved&&!(saved.conflicts||[]).some(function(item){return item.type==='update_after_remote_delete'&&item.collection==='issues'})){
     var newIssueFieldConflict=(saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'});
-    STATE.pendingNewIssue=null;T(newIssueFieldConflict?'工单已保存；另一设备也修改了同一字段，请核对当前结果':'问题已添加并同步云端');return
+    STATE.pendingNewIssue=null;T(businessWorkbookMessage(newIssueFieldConflict?'工单已保存；另一设备也修改了同一字段，请核对当前结果':'工单已登记',saved));return
   }
   if(!saved)STATE.data=before;
   STATE.voiceText=formDraft?formDraft.transcript:'';
   renderApp();
   restoreIssueFormDraft(formDraft);
-  T(saved?'同一工单已在另一设备删除，表单内容已保留':'问题未同步，已保留表单内容，请重试');
+  T(saved?'同一工单已在另一设备删除，表单内容已保留':'工单未同步，已保留表单内容，请重试');
 }
 async function updateIssue(){
   var id=STATE.editingIssueId;
@@ -2070,62 +2435,57 @@ async function updateIssue(){
   }
   if(ref.readOnly){T('全数据查看权限不能修改他人工单');return}
   var iss=ref.issue;
-  var oldProgress=iss.progress||'未开始';
-  var wasDone=oldProgress==='已完结';
   var nextShopName=document.getElementById('iss-shop').value.trim();
   if(!nextShopName){T('请填写门店名称');return}
+  var nextShopDesc=document.getElementById('iss-desc').value.trim();
+  if(!nextShopDesc){T('请填写门店问题');return}
+  var nextAssigneeName=normalizeAssigneeName(document.getElementById('iss-assignee').value);
+  if(!isValidExcelAssignee(nextAssigneeName)){T('请从Excel名单中选择有效跟进人');return}
+  var nextAssignee=findAssigneeByName(nextAssigneeName);
   var formDraft=captureIssueFormDraft();
-  var values={shopName:nextShopName,shopDesc:document.getElementById('iss-desc').value.trim(),priority:document.getElementById('iss-pri').value,deadline:document.getElementById('iss-deadline').value,progress:document.getElementById('iss-progress').value};
+  var nextUrgency=normalizeUrgency(document.getElementById('iss-pri').value);
+  var values={shopName:nextShopName,shopDesc:nextShopDesc,urgency:nextUrgency,priority:urgencyToPriority(nextUrgency),assigneeId:nextAssignee.id,assigneeName:nextAssignee.name,deadline:document.getElementById('iss-deadline').value};
   var touched=Object.assign({},STATE.issueFormTouched||{});
   if(ref.ownerUserId!==STATE.user.userId){
     var touchedKeys=Object.keys(touched).filter(function(key){return touched[key]});
     if(touchedKeys.length===0){T('尚未修改任何工单字段');return}
     var baseIssue=cloneJson(STATE.editingIssueBase||iss);
-    var teamHistoryKey='',teamHistoryOp=null;
-    if(touched.progress){
-      teamHistoryKey='team-update:'+ref.ownerUserId+':'+String(id)+':'+String(baseIssue.progress||'未开始')+'>'+values.progress;
-      teamHistoryOp=pendingHistoryOperation(teamHistoryKey);
-    }
-    var teamPatch={},fieldMap={shop:'shopName',desc:'shopDesc',pri:'priority',deadline:'deadline',progress:'progress'};
+    var teamPatch={},fieldMap={shop:'shopName',desc:'shopDesc',deadline:'deadline'};
     Object.keys(fieldMap).forEach(function(formKey){if(touched[formKey])teamPatch[fieldMap[formKey]]=values[fieldMap[formKey]]});
-    var teamHistory=teamHistoryOp?{id:teamHistoryOp.id,type:'status_change',content:'状态更新'}:null;
+    if(touched.pri){teamPatch.urgency=values.urgency;teamPatch.priority=values.priority}
+    if(touched.assignee){teamPatch.assigneeId=values.assigneeId;teamPatch.assigneeName=values.assigneeName}
     var teamResult=await saveTeamIssueMutation(ref.ownerUserId,id,{
       patch:teamPatch,
-      history:teamHistory,
-      expectedIssueUpdatedAt:baseIssue.updatedAt||null
+      history:null,
+      expectedIssueUpdatedAt:baseIssue.updatedAt||null,
+      syncReason:'issue_updated',syncRequestId:gid()
     });
     if(!teamResult.ok){
       if(teamResult.code==='issue_not_found')T('该工单已被成员删除，编辑内容未写入');
       else T('团队工单修改未同步，表单内容已保留，请重试');
       return;
     }
-    if(teamHistoryKey)delete pendingHistoryOps[teamHistoryKey];
     clearIssueEditState();
     renderApp();
-    T(teamResult.metadata.fieldConflict?'修改已保存；成员在您编辑期间更新过该工单，已保留其他最新数据，请核对':'团队工单修改已同步云端');
+    T(businessWorkbookMessage(teamResult.metadata.fieldConflict?'修改已保存；成员在您编辑期间更新过该工单，已保留其他最新数据，请核对':'团队工单修改已保存',teamResult));
     return;
   }
   var before=JSON.parse(JSON.stringify(STATE.data));
   iss.shopName=nextShopName;
   iss.shopDesc=values.shopDesc;
+  iss.urgency=values.urgency;
   iss.priority=values.priority;
+  iss.assigneeId=values.assigneeId;
+  iss.assigneeName=values.assigneeName;
   iss.deadline=values.deadline;
-  iss.progress=values.progress;
   iss.updatedAt=nowIso();
-  var historyKey='',historyOp=null;
-  if(oldProgress!==iss.progress){
-    historyKey='update:'+String(id)+':'+oldProgress+'>'+iss.progress;
-    historyOp=pendingHistoryOperation(historyKey);
-    appendIssueHistory(iss,'status_change','推进状态由“'+oldProgress+'”变更为“'+iss.progress+'”',oldProgress,iss.progress,historyOp);
-  }
-  if(!wasDone&&iss.progress==='已完结') archiveIssue(iss);
-  if(wasDone&&iss.progress!== '已完结') STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(iss.id)});
+  normalizeIssueContract(iss);
+  syncIssueArchiveForData(STATE.data,iss);
   clearIssueEditState();
-  var saving=saveUserData();
+  var saving=saveUserData({reason:'issue_updated',issueId:String(iss.id)});
   renderApp();
   var saved=await saving;
   if(saved){
-    if(historyKey)delete pendingHistoryOps[historyKey];
     var remotelyDeleted=(saved.conflicts||[]).some(function(item){return item.type==='update_after_remote_delete'&&item.collection==='issues'});
     if(remotelyDeleted){
       clearIssueEditState();STATE.pendingNewIssue=null;STATE.voiceText=formDraft?formDraft.transcript:'';
@@ -2135,7 +2495,7 @@ async function updateIssue(){
       return;
     }
     var updateDeleteConflict=(saved.conflicts||[]).some(function(item){return item.type==='remote_delete_overridden_by_followup'&&item.collection==='issues'});
-    T(updateDeleteConflict?'修改已保存；另一设备曾删除此工单，因包含新状态记录已自动保留':((saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'})?'修改已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'修改已同步云端'));
+    T(businessWorkbookMessage(updateDeleteConflict?'修改已保存；另一设备曾删除此工单，因包含新状态记录已自动保留':((saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'})?'修改已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'工单修改已保存'),saved));
   }else{
     STATE.data=before;STATE.editingIssueId=id;STATE.editingIssueOwnerUserId=STATE.user.userId;STATE.editingIssueBase=cloneJson(iss);STATE.issueFormTouched=Object.assign({},formDraft&&formDraft.touched||{});
     renderApp();restoreIssueFormDraft(formDraft);T('修改未同步，已保留编辑内容，请重试');
@@ -2154,12 +2514,15 @@ function editIssue(id,ownerUserId){
   window.scrollTo({top:document.getElementById('pane-issues').offsetTop-60,behavior:'smooth'});
 }
 async function changeProgress(id, prog, ownerUserId){
+  prog=safeFollowStatus(prog);
+  if(!prog){T('跟进状态仅支持“跟进中”或“已完结”');renderApp();return}
   var owner=ownerUserId||(STATE.user?STATE.user.userId:'');
   if(owner!==STATE.user.userId){
     var ref=findIssueRef(owner,id);
     if(!ref){T('该工单已删除或无权查看');renderApp();return}
     if(ref.readOnly){T('全数据查看权限不能修改他人工单');renderApp();return}
-    var displayedProgress=ref.issue.progress||'未开始';
+    if(!isValidExcelAssignee(ref.issue.assigneeName)){T('请先编辑工单并选择有效跟进人');renderApp();return}
+    var displayedProgress=safeFollowStatus(ref.issue.latestFollowUpStatus||ref.issue.progress)||'跟进中';
     if(displayedProgress===prog)return;
     if(!canStartMutation()){renderApp();return}
     var teamHistoryKey='team-progress:'+owner+':'+String(id)+':'+displayedProgress+'>'+prog;
@@ -2167,12 +2530,13 @@ async function changeProgress(id, prog, ownerUserId){
     var result=await saveTeamIssueMutation(owner,id,{
       patch:{progress:prog},
       history:{id:teamHistoryOp.id,type:'status_change',content:'状态更新'},
-      expectedIssueUpdatedAt:ref.issue.updatedAt||null
+      expectedIssueUpdatedAt:ref.issue.updatedAt||null,
+      syncReason:'issue_status_changed',syncRequestId:teamHistoryOp.id
     });
     if(result.ok){
       delete pendingHistoryOps[teamHistoryKey];
       renderApp();
-      T(result.metadata.fieldConflict?'进度已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单进度已更新并同步');
+      T(businessWorkbookMessage(result.metadata.fieldConflict?'进度已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单进度已更新',result));
     }else{
       renderApp();
       T(result.code==='issue_not_found'?'该工单已被成员删除':'团队工单进度未同步，请重试');
@@ -2181,7 +2545,8 @@ async function changeProgress(id, prog, ownerUserId){
   }
   var iss=findIssue(id);
   if(!iss||!iss.id) return;
-  var oldProgress=iss.progress||'未开始';
+  if(!isValidExcelAssignee(iss.assigneeName)){T('请先编辑工单并选择有效跟进人');renderApp();return}
+  var oldProgress=safeFollowStatus(iss.latestFollowUpStatus||iss.progress)||'跟进中';
   if(oldProgress===prog) return;
   if(!canStartMutation()){renderApp();return}
   var before=JSON.parse(JSON.stringify(STATE.data));
@@ -2190,9 +2555,10 @@ async function changeProgress(id, prog, ownerUserId){
   var historyKey='progress:'+String(id)+':'+oldProgress+'>'+prog;
   var historyOp=pendingHistoryOperation(historyKey);
   appendIssueHistory(iss,'status_change','推进状态由“'+oldProgress+'”变更为“'+prog+'”',oldProgress,prog,historyOp);
+  normalizeIssueContract(iss);
   if(!wasDone&&prog==='已完结') archiveIssue(iss);
-  if(wasDone&&prog!=='已完结') STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(iss.id)});
-  var saving=saveUserData();
+  if(wasDone&&prog!=='已完结') syncIssueArchiveForData(STATE.data,iss);
+  var saving=saveUserData({reason:'issue_status_changed',requestId:historyOp.id,issueId:String(iss.id)});
   renderApp();
   var saved=await saving;
   if(saved){
@@ -2200,22 +2566,22 @@ async function changeProgress(id, prog, ownerUserId){
     var progressDeleted=(saved.conflicts||[]).some(function(item){return item.type==='update_after_remote_delete'&&item.collection==='issues'});
     var progressConflict=(saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'});
     var progressDeleteConflict=(saved.conflicts||[]).some(function(item){return item.type==='remote_delete_overridden_by_followup'&&item.collection==='issues'});
-    T(progressDeleted?'该工单已在另一设备删除，本次进度未写入':(progressDeleteConflict?'进度已保存；另一设备曾删除此工单，因有新状态记录已自动保留':(progressConflict?'进度已保存；另一设备也修改了进度，当前以本次保存为准，请核对':'进度已更新并同步')));
+    T(progressDeleted?'该工单已在另一设备删除，本次进度未写入':businessWorkbookMessage(progressDeleteConflict?'进度已保存；另一设备曾删除此工单，因有新状态记录已自动保留':(progressConflict?'进度已保存；另一设备也修改了进度，当前以本次保存为准，请核对':'进度已更新'),saved));
   }
   else{STATE.data=before;renderApp();T('进度未同步，已恢复原状态')}
 }
 async function deleteIssue(id){
   if(!canStartMutation())return;
-  if(!confirm('确定删除此问题？')) return;
+  if(!confirm('确定删除此工单？')) return;
   var before=cloneJson(STATE.data);
   STATE.data.issues=STATE.data.issues.filter(function(i){return String(i.id)!==String(id)});
   STATE.data.archives=STATE.data.archives.filter(function(item){return String(item.sourceIssueId)!==String(id)});
   if(STATE.issueDetail&&STATE.issueDetail.ownerUserId===STATE.user.userId&&STATE.issueDetail.issueId===String(id))STATE.issueDetail=null;
-  var saving=saveUserData();
+  var saving=saveUserData({reason:'issue_deleted',issueId:String(id)});
   renderApp();
   var saved=await saving;
   if(!saved){STATE.data=before;renderApp();T('删除未同步，工单已恢复，请重试');return}
-  T(saved.conflicts&&saved.conflicts.length?'另一设备刚更新了此工单；为保护最新跟进，本次未删除':'已删除并同步云端');
+  T(saved.conflicts&&saved.conflicts.length?'另一设备刚更新了此工单；为保护最新跟进，本次未删除':businessWorkbookMessage('工单已从客户台删除',saved));
 }
 function archiveIssue(issue){
   if(syncIssueArchiveForData(STATE.data,issue))T(issue.shopName+' 已归档');
@@ -2405,7 +2771,8 @@ function parseVoiceText(text){
   else if(explicitGrades.length===0){
     if(/最高优先级|特急|紧急(?!程度)/.test(normalized)) pri='P0';
     else if(/高优先级|重要|尽快处理/.test(normalized)) pri='P1';
-    else if(/低优先级|普通|一般/.test(normalized)) pri='P2';
+    else if(/低优先级|紧急程度为低|不紧急/.test(normalized)) pri='低';
+    else if(/普通|一般/.test(normalized)) pri='P2';
     else if(/无法营业|全店(?:瘫痪|不可用)|系统(?:完全)?(?:瘫痪|不可用)/.test(normalized)) pri='P0';
     else if(/部分功能不可用|明显影响营业/.test(normalized)) pri='P1';
     else if(/咨询|培训|优化建议/.test(normalized)) pri='P2';
@@ -2423,7 +2790,7 @@ function parseVoiceText(text){
   var descMatch=normalized.match(/(?:门店问题|问题描述|问题|故障|异常|情况)\s*(?:是|为|有|[:：])?\s*(.+)/);
   if(descMatch) desc=descMatch[1];
   else desc=normalized;
-  desc=desc.replace(/[，,。；;]?\s*(?:优先级|紧急程度)\s*(?:是|为|[:：])?\s*(?:[Pp]\s*[012]|P[零一二]|最高优先级|高优先级|低优先级|紧急|重要|普通)[\s\S]*$/,'');
+  desc=desc.replace(/[，,。；;]?\s*(?:优先级|紧急程度)\s*(?:是|为|[:：])?\s*(?:[Pp]\s*[012]|P[零一二]|最高优先级|高优先级|低优先级|紧急|高|重要|普通|低)[\s\S]*$/,'');
   desc=desc.replace(/[，,。；;]?\s*(?:[Pp]\s*[012]|P[零一二])\s*(?:紧急|重要|普通)?[\s\S]*$/,'');
   desc=desc.replace(/[，,。；;]?\s*(?:截止(?:日期|时间)?|要求|计划)\s*(?:是|为|[:：])?[\s\S]*$/,'');
   if(!descMatch&&shop){
@@ -2431,12 +2798,13 @@ function parseVoiceText(text){
   }
   desc=desc.replace(/^\s*[，,。；;]?\s*(?:门店问题|问题描述|问题|故障|异常|情况)?\s*(?:是|为|有|[:：])?\s*/,'').replace(/[，,。；;\s]+$/,'').trim();
   if(desc===shop) desc='';
+  if(pri)pri=normalizeUrgency(pri);
 
   var missing=[];
   if(!shop) missing.push('门店名称');
   if(!desc) missing.push('门店问题');
   if(!pri) missing.push('紧急程度');
-  if(!deadline) missing.push('截止日期');
+  if(!deadline) missing.push('计划完成时间');
   return {shop:shop,desc:desc,pri:pri,deadline:deadline,missing:missing};
 }
 
@@ -2449,13 +2817,11 @@ function recognizeVoiceText(){
   var currentDesc=document.getElementById('iss-desc');
   var currentPri=document.getElementById('iss-pri');
   var currentDeadline=document.getElementById('iss-deadline');
-  var currentProgress=document.getElementById('iss-progress');
-  var preservedProgress=currentProgress?currentProgress.value:'未开始';
   var parsed=parseVoiceText(text);
   STATE.voiceParsed={
     shop:parsed.shop||(currentShop?currentShop.value:''),
     desc:parsed.desc||(currentDesc?currentDesc.value:''),
-    pri:parsed.pri||(currentPri?currentPri.value:'P2'),
+    pri:parsed.pri||(currentPri?currentPri.value:'普通'),
     deadline:parsed.deadline||(currentDeadline?currentDeadline.value:'')
   };
   STATE.voiceDetected={shop:parsed.shop,desc:parsed.desc,pri:parsed.pri,deadline:parsed.deadline};
@@ -2472,15 +2838,13 @@ function recognizeVoiceText(){
   var targetDesc=document.getElementById('iss-desc');
   var targetPri=document.getElementById('iss-pri');
   var targetDeadline=document.getElementById('iss-deadline');
-  var targetProgress=document.getElementById('iss-progress');
   if(targetShop) targetShop.value=STATE.voiceParsed.shop;
   if(targetDesc) targetDesc.value=STATE.voiceParsed.desc;
   if(targetPri) targetPri.value=STATE.voiceParsed.pri;
   if(targetDeadline) targetDeadline.value=STATE.voiceParsed.deadline;
-  if(targetProgress) targetProgress.value=preservedProgress;
   T(parsed.missing.length?'已填写可识别内容；请确认：'+parsed.missing.join('、'):'文字已识别并填入，请核对后添加');
   if(parsed.missing.length){
-    var idMap={'门店名称':'iss-shop','门店问题':'iss-desc','紧急程度':'iss-pri','截止日期':'iss-deadline'};
+    var idMap={'门店名称':'iss-shop','门店问题':'iss-desc','紧急程度':'iss-pri','计划完成时间':'iss-deadline'};
     setTimeout(function(){var el=document.getElementById(idMap[parsed.missing[0]]);if(el)el.focus()},50);
   }
 }
@@ -2495,7 +2859,7 @@ function renderDaily(){
   h+='<div><input type="date" id="daily-pick" value="'+date+'" onchange="STATE.dailyDate=this.value;renderApp()" style="font-size:14px;padding:5px 10px;border:1px solid var(--border);border-radius:4px"></div>';
   h+='</div>';
 
-  var archs=STATE.data.archives.filter(function(a){return a.completedAt===date});
+  var archs=STATE.data.archives.filter(function(a){return dateOnly(a.completedAt)===date});
   var supp=STATE.data.dailySupps[date]||'';
 
   h+='<div style="font-weight:700;font-size:14px;margin:12px 0 8px">我的日报 / 已完成归档</div>';
@@ -2506,8 +2870,8 @@ function renderDaily(){
     h+='<strong>当日完结 '+archs.length+' 项</strong>';
     for(var i=0;i<archs.length;i++){
       var ownArchivePriority=safePriority(archs[i].priority);
-      h+='<div class="daily-item"><span class="badge badge-'+ownArchivePriority.toLowerCase()+'">'+ownArchivePriority+'</span>'+
-        esc(archs[i].shopName)+' - '+esc(archs[i].shopDesc||'')+'</div>';
+      h+='<div class="daily-item"><span class="badge badge-'+ownArchivePriority.toLowerCase()+'">'+esc(normalizeUrgency(archs[i].urgency,archs[i].priority))+'</span>'+
+        esc(archs[i].ticketNo?archs[i].ticketNo+' · ':'')+esc(archs[i].shopName)+' - '+esc(archs[i].shopDesc||'')+'</div>';
     }
     h+='</div>';
   }
@@ -2529,7 +2893,7 @@ function renderDaily(){
         h+='<div style="font-size:12px;color:var(--text2);margin-bottom:6px">当日已完成 '+memberDaily.archives.length+' 项</div>';
         for(var ta=0;ta<memberDaily.archives.length;ta++){
           var teamArchive=memberDaily.archives[ta],teamArchivePriority=safePriority(teamArchive.priority);
-          h+='<div class="daily-item"><span class="badge badge-'+teamArchivePriority.toLowerCase()+'">'+teamArchivePriority+'</span>'+esc(teamArchive.shopName||'未知门店')+' - '+esc(teamArchive.shopDesc||'')+'</div>';
+          h+='<div class="daily-item"><span class="badge badge-'+teamArchivePriority.toLowerCase()+'">'+esc(normalizeUrgency(teamArchive.urgency,teamArchive.priority))+'</span>'+esc(teamArchive.ticketNo?teamArchive.ticketNo+' · ':'')+esc(teamArchive.shopName||'未知门店')+' - '+esc(teamArchive.shopDesc||'')+'</div>';
         }
         if(memberDaily.note)h+='<div style="font-size:12px;line-height:1.7;color:var(--text2);background:var(--border2);padding:8px 10px;border-radius:6px;margin-top:8px"><strong>日报备注：</strong>'+esc(memberDaily.note)+'</div>';
         h+='</div>';
@@ -2737,9 +3101,10 @@ function importData(input){
       STATE.data.knowledge=d.knowledge||[];
       STATE.data.archives=d.archives||[];
       STATE.data.dailySupps=d.dailySupps||{};
-      var saving=saveUserData();
+      var saving=saveUserData({reason:'data_imported',fullSync:true});
       renderApp();
-      T((await saving)?'数据已恢复并同步云端':'恢复数据未同步，请重试');
+      var saved=await saving;
+      T(saved?businessWorkbookMessage('数据已恢复',saved):'恢复数据未同步，请重试');
     }catch(err){T('JSON解析失败，请检查文件')}
   };
   reader.readAsText(file);
@@ -2758,13 +3123,14 @@ async function confirmClear(){
   STATE.pendingNewIssue=null;
   pendingHistoryOps={};
   STATE.voiceText='';
-  STATE.voiceParsed={shop:'',desc:'',pri:'P2',deadline:''};
+  STATE.voiceParsed={shop:'',desc:'',pri:'普通',deadline:''};
   STATE.voiceDetected={shop:'',desc:'',pri:'',deadline:''};
   STATE.voiceParsedReady=false;
   STATE.voiceMissing=[];
-  var saving=saveUserData();
+  var saving=saveUserData({reason:'data_cleared',fullSync:true});
   renderApp();
-  T((await saving)?(hasTeamAccess?'我的数据已清空；团队成员数据已保留':'当前账号数据已清空并同步'):'清空操作未同步，请重试');
+  var saved=await saving;
+  T(saved?businessWorkbookMessage(hasTeamAccess?'我的数据已清空，团队成员数据已保留':'当前账号数据已清空',saved):'清空操作未同步，请重试');
 }
 
 // ====== 初始化 ======

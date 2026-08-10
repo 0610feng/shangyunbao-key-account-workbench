@@ -878,10 +878,10 @@ function mergeUserData(base,local,remote,conflicts){
   };
 }
 function profileToUser(p){
-  return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all};
+  return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all,isActive:p.is_active!==false,deactivatedAt:p.deactivated_at||''};
 }
 function profileForUi(p){
-  return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all,createdAt:(p.created_at||'').slice(0,10)};
+  return {userId:p.id,username:p.username,name:p.name||p.username,department:p.department||'',role:p.role||'member',canViewAll:!!p.can_view_all,isActive:p.is_active!==false,createdAt:(p.created_at||'').slice(0,10),deactivatedAt:(p.deactivated_at||'').slice(0,10)};
 }
 function backfillOwnerAssignee(data,owner){
   if(!data||!owner||!Array.isArray(data.issues))return data;
@@ -902,13 +902,18 @@ function backfillOwnerAssignee(data,owner){
 function findAssigneeByName(name){
   name=normalizeAssigneeName(name);
   if(!isValidExcelAssignee(name))return {id:'',name:''};
-  var profile=TEAM_PROFILES.find(function(item){return normalizeAssigneeName(item.name)===name});
-  if(!profile&&STATE.user&&normalizeAssigneeName(STATE.user.name)===name)profile=STATE.user;
+  var profile=TEAM_PROFILES.find(function(item){return item.isActive!==false&&normalizeAssigneeName(item.name)===name});
+  if(!profile&&STATE.user&&STATE.user.isActive!==false&&normalizeAssigneeName(STATE.user.name)===name)profile=STATE.user;
   return profile?{id:String(profile.userId||profile.id||''),name:name}:{id:'',name:name};
 }
 function assigneeOptionsHtml(selectedName){
   selectedName=normalizeAssigneeName(selectedName);
-  var names=EXCEL_ASSIGNEE_NAMES.slice();
+  var inactiveNames={};
+  TEAM_PROFILES.forEach(function(item){
+    var name=normalizeAssigneeName(item.name);
+    if(name&&item.isActive===false)inactiveNames[name]=true;
+  });
+  var names=EXCEL_ASSIGNEE_NAMES.filter(function(name){return !inactiveNames[name]||name===selectedName});
   var invalidSelected=selectedName&&!isValidExcelAssignee(selectedName);
   var html='<option value=""'+((!selectedName||invalidSelected)?' selected':'')+'>'+(invalidSelected?'需重新选择（原：'+esc(selectedName)+'）':'请选择')+'</option>';
   names.forEach(function(name){html+='<option value="'+escAttr(name)+'"'+(name===selectedName?' selected':'')+'>'+esc(name)+'</option>'});
@@ -949,7 +954,46 @@ function loadPasscodes(){return TEAM_PROFILES.slice()}
 function savePasscodes(){return}
 function initDefaultPasscodes(){return TEAM_PROFILES}
 function addPasscode(){T('请让成员在登录页自行注册');return null}
-function deletePasscode(){T('为保护历史数据，成员账号请在 Supabase 后台停用')}
+function memberBusinessCounts(userId){
+  var member=STATE.importedData&&STATE.importedData[userId];
+  var data=member&&member.data?member.data:{};
+  return {
+    issues:Array.isArray(data.issues)?data.issues.length:0,
+    archives:Array.isArray(data.archives)?data.archives.length:0,
+    knowledge:Array.isArray(data.knowledge)?data.knowledge.length:0
+  };
+}
+async function setMemberActive(userId,isActive){
+  if(!db||!isAdmin(STATE.user)){T('只有管理员可以移除或恢复成员');return false}
+  if(String(userId)===String(STATE.user.userId)){T('不能移除当前登录的管理员账号');return false}
+  var result=await db.rpc('admin_set_member_active',{p_user_id:userId,p_active:!!isActive});
+  if(result.error){T((isActive?'恢复':'移除')+'成员失败：'+result.error.message);return false}
+  await loadImportedData();
+  renderApp();
+  T(isActive?'成员账号已恢复':'成员已移除，历史业务数据仍完整保留');
+  return true;
+}
+function deletePasscode(userId){
+  if(!isAdmin(STATE.user)){T('只有管理员可以移除成员');return}
+  if(String(userId)===String(STATE.user.userId)){T('不能移除当前登录的管理员账号');return}
+  var p=loadPasscodes().find(function(item){return String(item.userId)===String(userId)});
+  if(!p)return;
+  var counts=memberBusinessCounts(userId);
+  var h='<h3>移除成员</h3>'+
+    '<p style="font-size:14px;line-height:1.8;color:var(--text2)">确认移除 <strong>'+esc(p.name||p.username)+'</strong>？移除后该账号将不能进入工作台，并从新工单跟进人选项中隐藏。</p>'+
+    '<div style="font-size:13px;line-height:1.8;color:var(--text2);padding:10px 12px;background:var(--warn2);border-radius:6px">历史数据不会删除：当前工单 '+counts.issues+' 条、已完结归档 '+counts.archives+' 条、知识 '+counts.knowledge+' 条。管理员仍可查看，并可随时恢复账号。</div>'+
+    '<div class="modal-actions"><button class="btn" onclick="closeModal()">取消</button><button class="btn btn-outline-danger" onclick="confirmDeletePasscode(\''+inlineArg(userId)+'\')">确认移除</button></div>';
+  showModal(h);
+}
+async function confirmDeletePasscode(encodedUserId){
+  var userId=decodeURIComponent(encodedUserId);
+  var ok=await setMemberActive(userId,false);
+  if(ok)closeModal();
+}
+async function restorePasscode(userId){
+  if(!confirm('确认恢复该成员账号？恢复后成员可再次登录工作台。'))return;
+  await setMemberActive(userId,true);
+}
 async function updatePasscode(userId,updates){
   if(!db||!isAdmin(STATE.user)) return false;
   var payload={name:updates.name,department:updates.department||'',role:updates.role||'member',can_view_all:!!updates.canViewAll};
@@ -1182,6 +1226,10 @@ async function refreshFromCloud(options){
     return changed;
   }catch(error){
     console.error('[商云宝] 云端刷新失败',error);
+    if(isAccountDeactivatedError(error)){
+      await handleDeactivatedSession();
+      return false;
+    }
     setCloudStatus('云端刷新失败','var(--danger)');
     if(!options.silent) T('刷新失败，请检查网络后重试');
     return false;
@@ -1227,10 +1275,13 @@ async function loadImportedData(){
   if(!db||!STATE.user){STATE.importedData={};TEAM_PROFILES=[];return}
   var activeUserId=STATE.user.userId;
   var nextImported={},nextProfiles=[];
-  var profilesResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,created_at').order('created_at',{ascending:true});
+  var profilesResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,is_active,deactivated_at,created_at').order('created_at',{ascending:true});
   if(profilesResult.error) throw profilesResult.error;
   nextProfiles=(profilesResult.data||[]).map(profileForUi);
   var activeProfile=nextProfiles.find(function(item){return item.userId===activeUserId});
+  if(activeProfile&&activeProfile.isActive===false){
+    var inactiveError=new Error('ACCOUNT_DEACTIVATED');inactiveError.code='ACCOUNT_DEACTIVATED';throw inactiveError;
+  }
   var permissionChanged=false;
   if(activeProfile&&STATE.user&&STATE.user.userId===activeUserId){
     var previousTier=permissionTier(STATE.user);
@@ -1238,6 +1289,8 @@ async function loadImportedData(){
     STATE.user.department=activeProfile.department;
     STATE.user.role=activeProfile.role;
     STATE.user.canViewAll=activeProfile.canViewAll;
+    STATE.user.isActive=activeProfile.isActive;
+    STATE.user.deactivatedAt=activeProfile.deactivatedAt||'';
     permissionChanged=previousTier!==permissionTier(STATE.user);
   }
   var activeCanViewTeam=canViewTeamData(STATE.user);
@@ -1589,9 +1642,29 @@ function switchLoginTab(tab){
   }
 }
 
+function isAccountDeactivatedError(error){
+  return !!error&&(error.code==='ACCOUNT_DEACTIVATED'||String(error.message||'').indexOf('ACCOUNT_DEACTIVATED')>=0);
+}
+async function handleDeactivatedSession(){
+  stopVoiceRecognition(true);
+  stopRealtimeSync();
+  if(db)await db.auth.signOut();
+  STATE.user=null;
+  STATE.data=emptyUserData();
+  STATE.importedData={};
+  TEAM_PROFILES=[];
+  clearIssueEditState();
+  STATE.issueDetail=null;
+  STATE.pendingNewIssue=null;
+  showLogin('该账号已被管理员移除。如需恢复，请联系管理员。');
+}
+
 async function startUserSession(authUser){
-  var profileResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,created_at').eq('id',authUser.id).single();
+  var profileResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,is_active,deactivated_at,created_at').eq('id',authUser.id).single();
   if(profileResult.error) throw profileResult.error;
+  if(profileResult.data.is_active===false){
+    var inactiveError=new Error('ACCOUNT_DEACTIVATED');inactiveError.code='ACCOUNT_DEACTIVATED';throw inactiveError;
+  }
   STATE.user=profileToUser(profileResult.data);
   clearIssueEditState();
   STATE.pendingNewIssue=null;
@@ -1647,6 +1720,7 @@ async function doLogin(){
     T('欢迎回来，数据已从云端恢复！');
   }catch(error){
     console.error('[商云宝] 登录失败',error);
+    if(isAccountDeactivatedError(error)){await handleDeactivatedSession();return}
     showLogin('用户名或密码错误，请检查后重试');
   }
 }
@@ -1697,6 +1771,7 @@ function editPasscode(userId){
   var p=null;
   for(var i=0;i<list.length;i++){if(list[i].userId===userId){p=list[i];break}}
   if(!p) return;
+  if(p.isActive===false){T('请先恢复成员账号再编辑');return}
   var canEditRole = p.userId!==STATE.user.userId;
   var currentTier=permissionTier(p);
   var h='<h3>编辑成员</h3>';
@@ -3086,13 +3161,16 @@ async function deleteKnowledge(id){
 function renderTeam(){
   if(!isAdmin(STATE.user)) return '<div class="empty">只有管理员可以进入团队管理</div>';
   var passcodes=loadPasscodes();
+  var activeMembers=passcodes.filter(function(item){return item.isActive!==false});
+  var inactiveMembers=passcodes.filter(function(item){return item.isActive===false});
+  passcodes=activeMembers.concat(inactiveMembers);
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.users+'</span> 团队管理</div>';
   h+='<div class="import-section">';
   h+='<div class="is-title">团队数据已自动汇总</div>';
   h+='<div class="is-desc">成员保存的业务数据会实时写入 Supabase 云端。管理员驾驶舱已自动汇总 '+Object.keys(STATE.importedData).length+' 位其他成员的数据；可在下方把成员设置为普通成员、全数据查看或管理员。</div>';
   h+='</div>';
   h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">';
-  h+='<span style="font-weight:700;font-size:14px">成员管理（'+passcodes.length+' 人）</span>';
+  h+='<span style="font-weight:700;font-size:14px">成员管理（在岗 '+activeMembers.length+' 人，已移除 '+inactiveMembers.length+' 人）</span>';
   h+='<button class="btn btn-sm btn-primary" onclick="showAddPasscode()">'+I.plus+' 新增成员说明</button>';
   h+='</div>';
 
@@ -3104,12 +3182,17 @@ function renderTeam(){
       var isSelf=p.userId===STATE.user.userId;
       h+='<div class="pwd-card">';
       h+='<div class="pw-info">';
-      h+='<div class="pw-name">'+esc(p.name||'')+(isSelf?' <span style="font-size:10px;color:var(--text3)">(我)</span>':'')+'</div>';
+      h+='<div class="pw-name">'+esc(p.name||'')+(isSelf?' <span style="font-size:10px;color:var(--text3)">(我)</span>':'')+(p.isActive===false?' <span class="badge badge-p2" style="margin-left:6px">已移除</span>':'')+'</div>';
       h+='<div class="pw-meta">'+esc(p.department||'')+' · 用户名: <span class="pw-code">'+esc(p.username||'')+'</span> · '+
-        permissionLabel(p)+' · 注册于 '+esc(p.createdAt||'')+'</div>';
+        permissionLabel(p)+' · 注册于 '+esc(p.createdAt||'')+(p.isActive===false&&p.deactivatedAt?' · 移除于 '+esc(p.deactivatedAt):'')+'</div>';
       h+='</div>';
       h+='<div class="pw-actions">';
-      h+='<button class="btn btn-xs" onclick="editPasscode(\''+p.userId+'\')">'+I.edit+'</button>';
+      if(p.isActive===false){
+        h+='<button class="btn btn-xs btn-primary" onclick="restorePasscode(\''+p.userId+'\')">恢复</button>';
+      }else{
+        h+='<button class="btn btn-xs" onclick="editPasscode(\''+p.userId+'\')">'+I.edit+'</button>';
+        if(!isSelf)h+='<button class="btn btn-xs btn-outline-danger" onclick="deletePasscode(\''+p.userId+'\')">移除</button>';
+      }
       h+='</div></div>';
     }
   }
@@ -3220,6 +3303,10 @@ window.addEventListener('beforeunload',function(event){
     }
   }catch(error){
     console.error('[商云宝] 云端初始化失败',error);
+    if(isAccountDeactivatedError(error)){
+      await handleDeactivatedSession();
+      return;
+    }
     showLogin('云端连接失败，请刷新页面重试');
     return;
   }

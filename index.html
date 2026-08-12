@@ -310,6 +310,7 @@ var STATE = {
   issueFormTouched: {},
   pendingNewIssue: null,
   issueDetail: null,
+  adminFullWorkbookSync: {status:'idle', message:'', requestId:''},
   voiceText: '',
   voiceParsed: {shop:'', desc:'', pri:'普通', deadline:''},
   voiceDetected: {shop:'', desc:'', pri:'', deadline:''},
@@ -1751,6 +1752,7 @@ async function startUserSession(authUser){
     var inactiveError=new Error('ACCOUNT_DEACTIVATED');inactiveError.code='ACCOUNT_DEACTIVATED';throw inactiveError;
   }
   STATE.user=profileToUser(profileResult.data);
+  STATE.adminFullWorkbookSync={status:'idle',message:'',requestId:''};
   clearIssueEditState();
   STATE.pendingNewIssue=null;
   pendingHistoryOps={};
@@ -1823,6 +1825,7 @@ async function doLogout(){
   clearIssueEditState();
   STATE.issueDetail=null;
   STATE.pendingNewIssue=null;
+  STATE.adminFullWorkbookSync={status:'idle',message:'',requestId:''};
   STATE.knowledgeQuery='';
   pendingHistoryOps={};
   workbookCompensationUserId='';
@@ -3233,6 +3236,90 @@ async function deleteKnowledge(id){
   T((await saving)?'已删除并同步云端':'删除未同步，请重试');
 }
 
+function adminFullWorkbookSyncState(){
+  var state=STATE.adminFullWorkbookSync;
+  if(!state||typeof state!=='object'){
+    state={status:'idle',message:'',requestId:''};
+    STATE.adminFullWorkbookSync=state;
+  }
+  return state;
+}
+function adminFullWorkbookSyncFailureMessage(result){
+  result=result&&typeof result==='object'?result:{};
+  if(result.skipped&&result.status==='disabled')return '当前 WPS 联动尚未启用，未执行全量同步。客户管家台数据没有改动。';
+  if(result.status==='unavailable')return '当前登录会话无法连接同步服务，未执行全量同步。请刷新页面后重试。';
+  var details=result.details&&typeof result.details==='object'?result.details:{};
+  var detailMessage=String(details.message||result.error&&result.error.message||'').trim();
+  return '全量同步未完成'+(detailMessage?'：'+detailMessage:'')+'。客户管家台数据没有改动，可稍后重试。';
+}
+function renderAdminFullWorkbookSyncPanel(){
+  if(!isAdmin(STATE.user))return '';
+  var state=adminFullWorkbookSyncState();
+  var running=state.status==='running';
+  var statusStyle=state.status==='success'
+    ? 'background:var(--success2);color:#047857;border-color:#a7f3d0'
+    : (state.status==='failed'
+      ? 'background:var(--danger2);color:var(--danger);border-color:#fecaca'
+      : 'background:var(--primary-lighter);color:var(--primary-dark);border-color:var(--primary-light)');
+  var h='<div class="card" id="admin-full-wps-sync-panel">';
+  h+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">';
+  h+='<div style="flex:1;min-width:220px"><div style="font-size:14px;font-weight:700;margin-bottom:4px">全量同步到 WPS</div>'+
+    '<div style="font-size:12px;line-height:1.7;color:var(--text2)">将 Supabase 当前全部工单和跟进记录核对并镜像到 WPS。此操作不会修改客户管家台的工单业务数据。</div></div>';
+  h+='<button id="admin-full-wps-sync-button" class="btn btn-sm btn-primary" onclick="runAdminFullWorkbookSync()"'+
+    (running?' disabled aria-busy="true" style="opacity:.65;cursor:not-allowed"':'')+'>'+I.refresh+' '+(running?'正在全量同步…':'开始全量同步')+'</button>';
+  h+='</div>';
+  if(state.message){
+    h+='<div id="admin-full-wps-sync-status" role="status" aria-live="polite" style="margin-top:10px;padding:9px 11px;border:1px solid;border-radius:var(--rxs);font-size:12px;line-height:1.7;'+statusStyle+'">'+esc(state.message)+'</div>';
+  }
+  h+='</div>';
+  return h;
+}
+async function runAdminFullWorkbookSync(){
+  if(!isAdmin(STATE.user)){
+    T('只有管理员可以执行 WPS 全量同步');
+    return {ok:false,status:'forbidden'};
+  }
+  var current=adminFullWorkbookSyncState();
+  if(current.status==='running')return {ok:false,status:'already_running',requestId:current.requestId};
+  if(!confirm('确认把 Supabase 当前全部工单和跟进记录全量同步到 WPS？\n\n同步期间请不要重复点击。此操作不会修改客户管家台的工单业务数据。')){
+    return {ok:false,status:'cancelled'};
+  }
+  var requestId='admin-full-wps:'+String(STATE.user.userId||'admin')+':'+gid();
+  STATE.adminFullWorkbookSync={status:'running',message:'正在核对并同步全部工单和跟进记录，请勿重复点击…',requestId:requestId};
+  setCloudStatus('正在执行 WPS 全量同步','var(--primary)');
+  renderApp();
+  try{
+    var result=await requestWorkbookSync('admin_manual_full_sync',{mode:'full',requestId:requestId});
+    if(result&&result.workbookSynced){
+      var data=result.data&&typeof result.data==='object'?result.data:{};
+      var counts=[];
+      if(Number.isFinite(Number(data.tickets)))counts.push(Number(data.tickets)+' 张工单');
+      if(Number.isFinite(Number(data.followups)))counts.push(Number(data.followups)+' 条跟进');
+      if(Number(data.deletions)>0)counts.push(Number(data.deletions)+' 条删除项');
+      var prefix=result.status==='unchanged'?'全量核对完成，WPS 已是最新':'全量同步成功，WPS 已更新';
+      var message=prefix+(counts.length?'；已核对 '+counts.join('、'):'')+'。';
+      STATE.adminFullWorkbookSync={status:'success',message:message,requestId:requestId};
+      setCloudStatus('WPS 全量同步已完成','var(--success)');
+      renderApp();
+      T(message);
+      return result;
+    }
+    var failureMessage=adminFullWorkbookSyncFailureMessage(result);
+    STATE.adminFullWorkbookSync={status:'failed',message:failureMessage,requestId:requestId};
+    setCloudStatus('WPS 全量同步未完成，请稍后重试','var(--warning)');
+    renderApp();
+    T(failureMessage);
+    return result||{ok:false,status:'failed',requestId:requestId};
+  }catch(error){
+    var failure=adminFullWorkbookSyncFailureMessage({error:error});
+    STATE.adminFullWorkbookSync={status:'failed',message:failure,requestId:requestId};
+    setCloudStatus('WPS 全量同步未完成，请稍后重试','var(--warning)');
+    renderApp();
+    T(failure);
+    return {ok:false,status:'failed',error:error,requestId:requestId};
+  }
+}
+
 // ====== 团队管理（管理员专属）=======
 function renderTeam(){
   if(!isAdmin(STATE.user)) return '<div class="empty">只有管理员可以进入团队管理</div>';
@@ -3241,6 +3328,7 @@ function renderTeam(){
   var inactiveMembers=passcodes.filter(function(item){return item.isActive===false});
   passcodes=activeMembers.concat(inactiveMembers);
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.users+'</span> 团队管理</div>';
+  h+=renderAdminFullWorkbookSyncPanel();
   h+='<div class="import-section">';
   h+='<div class="is-title">团队数据已自动汇总</div>';
   h+='<div class="is-desc">成员保存的业务数据会实时写入 Supabase 云端。管理员驾驶舱已自动汇总 '+Object.keys(STATE.importedData).length+' 位其他成员的数据；可在下方把成员设置为普通成员、全数据查看或管理员。</div>';
@@ -3391,3 +3479,4 @@ window.addEventListener('beforeunload',function(event){
 </script>
 </body>
 </html>
+  

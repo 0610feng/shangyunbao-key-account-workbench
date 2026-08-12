@@ -236,6 +236,34 @@ body{
 .followup-form textarea{min-height:88px}
 .readonly-note{margin-top:14px;padding:10px 12px;border-radius:var(--rs);background:var(--warn2);color:#92400e;font-size:12px}
 
+.workbook-conflict-modal{max-width:860px;max-height:calc(100vh - 40px);overflow-y:auto;padding:0}
+.workbook-conflict-header{position:sticky;top:0;z-index:2;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:18px 20px 14px;background:var(--card);border-bottom:1px solid var(--border)}
+.workbook-conflict-header h3{margin:0;font-size:18px;line-height:1.35}
+.workbook-conflict-sub{font-size:12px;color:var(--text3);line-height:1.65;margin-top:4px}
+.workbook-conflict-body{padding:16px 20px 22px}
+.workbook-conflict-card{border:1px solid var(--border);border-left:4px solid var(--danger);border-radius:var(--rs);padding:13px;margin-bottom:12px;background:var(--card)}
+.workbook-conflict-card.pending{border-left-color:var(--warn);background:var(--warn2)}
+.workbook-conflict-card:last-child{margin-bottom:0}
+.workbook-conflict-title{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:4px}
+.workbook-conflict-title strong{font-size:14px;overflow-wrap:anywhere}
+.workbook-conflict-meta{display:flex;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--text3);margin-bottom:10px}
+.workbook-conflict-status{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--danger2);color:var(--danger);font-weight:700;white-space:nowrap}
+.workbook-conflict-card.pending .workbook-conflict-status{background:#fef3c7;color:#92400e}
+.workbook-conflict-values{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.workbook-conflict-value{border:1px solid var(--border);border-radius:var(--rxs);padding:9px;background:var(--bg);min-width:0}
+.workbook-conflict-value.base{background:var(--border2)}
+.workbook-conflict-value.workbench{background:var(--primary-lighter);border-color:var(--primary-light)}
+.workbook-conflict-value.workbook{background:var(--warn2);border-color:#fde68a}
+.workbook-conflict-value .wcv-label{font-size:11px;color:var(--text3);font-weight:700;margin-bottom:4px}
+.workbook-conflict-value .wcv-content{font-size:13px;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;max-height:180px;overflow-y:auto}
+.workbook-conflict-note{margin-top:10px}
+.workbook-conflict-note label{display:block;font-size:11px;font-weight:700;color:var(--text2);margin-bottom:3px}
+.workbook-conflict-note textarea{width:100%;min-height:58px;resize:vertical;padding:8px 10px;border:1px solid var(--border);border-radius:var(--rxs);font:inherit;font-size:13px;color:var(--text);background:var(--card)}
+.workbook-conflict-note textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-light)}
+.workbook-conflict-warning{font-size:12px;line-height:1.65;padding:8px 10px;border-radius:var(--rxs);background:var(--warn2);color:#92400e;margin-top:10px}
+.workbook-conflict-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-top:10px}
+.workbook-conflict-actions .btn[disabled]{opacity:.6;cursor:not-allowed;transform:none}
+
 .import-section{background:var(--primary-lighter);border:1px dashed var(--primary-light);border-radius:var(--rs);padding:12px 14px;margin-bottom:12px}
 .import-section .is-title{font-size:13px;font-weight:600;color:var(--primary-dark);margin-bottom:6px}
 .import-section .is-desc{font-size:12px;color:var(--text2);margin-bottom:8px}
@@ -254,9 +282,16 @@ body{
   .voice-actions .btn{flex:1}
   .modal-mask{padding:8px;align-items:flex-end}
   .issue-detail-modal{max-height:92vh;border-radius:16px 16px 0 0}
+  .workbook-conflict-modal{max-height:92vh;border-radius:16px 16px 0 0}
   .issue-detail-header{padding:15px 14px 12px}
   .issue-detail-body{padding:14px}
   .issue-detail-grid{grid-template-columns:1fr 1fr}
+  .workbook-conflict-header{padding:15px 14px 12px}
+  .workbook-conflict-body{padding:12px 10px 18px}
+  .workbook-conflict-values{grid-template-columns:1fr}
+  .workbook-conflict-value .wcv-content{max-height:none}
+  .workbook-conflict-actions{display:grid;grid-template-columns:1fr}
+  .workbook-conflict-actions .btn{width:100%}
 }
 @supports(padding-bottom:env(safe-area-inset-bottom)){
   #app{padding-bottom:env(safe-area-inset-bottom)}
@@ -297,16 +332,21 @@ var STATE = {
   user: null,       // {userId, name, department, role:'admin'|'member', canViewAll}
   data: {issues:[], knowledge:[], archives:[], dailySupps:{}},
   importedData: {}, // {userId: {issues, archives, ...}} 拥有全数据查看权限时加载的团队数据
+  sharedKnowledge: [], // 专用只读 RPC 返回的全员共享知识；不包含其他业务集合
+  sharedKnowledgeError: '',
   dashRange: 'today',
   dashScope: 'team',
+  dashOwnerUserId: '',
   dashStart: '',
   dashEnd: '',
   dailyDate: '',
   knowledgeQuery: '',
+  issueQuery: '',
   tab: 'dashboard',
   editingIssueId: null,
   editingIssueOwnerUserId: null,
   editingIssueBase: null,
+  editingIssueSnapshot: null,
   issueFormTouched: {},
   pendingNewIssue: null,
   issueDetail: null,
@@ -346,16 +386,36 @@ function escAttr(s){return String(s===undefined||s===null?'':s).replace(/&/g,'&a
 function inlineArg(s){return encodeURIComponent(String(s===undefined||s===null?'':s)).replace(/'/g,'%27')}
 function safePriority(value){return value==='P0'||value==='P1'||value==='P2'?value:'P2'}
 var EXCEL_URGENCY_VALUES=['紧急','高','普通','低'];
-var EXCEL_ASSIGNEE_NAMES=['郑康','张国鹏','杨柳','杜梦新','耿怡哲','张胜飞','张铭','张淦杨'];
 function normalizeAssigneeName(value){
   value=String(value||'').trim();
   if(value==='张淏杨'||value==='张洏杨')return '张淦杨';
   return value;
 }
-function isValidExcelAssignee(value){return EXCEL_ASSIGNEE_NAMES.indexOf(normalizeAssigneeName(value))>=0}
+function activeAssigneeNames(){
+  var profiles=Array.isArray(TEAM_PROFILES)?TEAM_PROFILES.slice():[];
+  if(STATE.user&&STATE.user.isActive!==false&&!profiles.some(function(item){return String(item.userId||item.id||'')===String(STATE.user.userId||STATE.user.id||'')}))profiles.push(STATE.user);
+  var counts={},names=[];
+  profiles.forEach(function(item){
+    if(!item||item.isActive===false)return;
+    var name=normalizeAssigneeName(item.name||'');
+    if(name)counts[name]=(counts[name]||0)+1;
+  });
+  Object.keys(counts).sort(function(a,b){return a.localeCompare(b,'zh-CN')}).forEach(function(name){if(counts[name]===1)names.push(name)});
+  return names;
+}
+function knownAssigneeProfile(value){
+  var name=normalizeAssigneeName(value);
+  if(!name)return null;
+  var profiles=Array.isArray(TEAM_PROFILES)?TEAM_PROFILES:[];
+  return profiles.find(function(item){return normalizeAssigneeName(item&&item.name||'')===name})||
+    (STATE.user&&normalizeAssigneeName(STATE.user.name||'')===name?STATE.user:null);
+}
+function isValidExcelAssignee(value){return activeAssigneeNames().indexOf(normalizeAssigneeName(value))>=0}
 function assigneeDisplayName(value){
   var name=normalizeAssigneeName(value);
-  return isValidExcelAssignee(name)?name:(name?'需重新选择（原：'+name+'）':'需重新选择');
+  if(isValidExcelAssignee(name))return name;
+  var known=knownAssigneeProfile(name);
+  return known&&known.isActive===false?name+'（已移除，历史保留）':(name?'需重新选择（原：'+name+'）':'需重新选择');
 }
 function normalizeUrgency(value,legacyPriority){
   value=String(value||'').trim();
@@ -385,20 +445,30 @@ function dateOnly(value){
   }
   return matched?matched[1]:'';
 }
+function historyTimelineEpoch(item){
+  var parsed=Date.parse(String(item&&item.followedAt||item&&item.createdAt||''));
+  return isFinite(parsed)?parsed:Number.NEGATIVE_INFINITY;
+}
+function compareHistoryTimelineDesc(a,b){
+  var byTime=historyTimelineEpoch(b)-historyTimelineEpoch(a);
+  if(byTime)return byTime;
+  var left=String(a&&a.followUpId||a&&a.id||'');
+  var right=String(b&&b.followUpId||b&&b.id||'');
+  return left===right?0:(left<right?1:-1);
+}
 function latestManualFollowUp(issue){
   var followUps=issue&&Array.isArray(issue.followUps)?issue.followUps:[];
-  var manual=followUps.filter(function(item){return item&&item.type==='follow_up'});
-  manual.sort(function(a,b){
-    var byTime=String(b.followedAt||b.createdAt||'').localeCompare(String(a.followedAt||a.createdAt||''));
-    return byTime||String(b.followUpId||b.id||'').localeCompare(String(a.followUpId||a.id||''));
+  var manual=followUps.filter(function(item){
+    return item&&(item.type==='follow_up'||item.type==='status_change')&&safeFollowStatus(item.status||item.toProgress);
   });
+  manual.sort(compareHistoryTimelineDesc);
   return manual[0]||null;
 }
 function deriveCurrentStatus(issue){
   if(!issue)return '未跟进';
   var latest=latestManualFollowUp(issue);
   var latestStatus=latest?safeFollowStatus(latest.status||latest.toProgress):'';
-  // 有人工跟进时只认“时间 + 跟进ID”排序后的最新一条；progress 仅供没有历史记录的旧数据兜底。
+  // 人工跟进与状态变更共同组成状态时间线；按绝对时刻+稳定ID取最新，progress仅供无历史旧数据兜底。
   if(latestStatus==='已完结'||(!latest&&safeFollowStatus(issue.progress)==='已完结'))return '已完结';
   if(issue.deadline){
     var deadlineDate=dateOnly(issue.deadline);
@@ -417,6 +487,7 @@ function normalizeFollowUpContract(item,issue){
   item.authorId=item.authorId||item.followerId;
   item.authorName=normalizeAssigneeName(item.authorName||item.followerName);
   if(item.type==='follow_up')item.status=safeFollowStatus(item.status||item.toProgress||issue&&issue.progress)||'跟进中';
+  if(item.type==='status_change')item.toProgress=safeFollowStatus(item.toProgress||item.status)||'';
   return item;
 }
 function normalizeIssueContract(issue){
@@ -524,12 +595,18 @@ var realtimeRefreshTimer = null;
 var realtimeDeferCount = 0;
 var refreshQueued = false;
 var syncPollTimer = null;
+var workbookInboundPollTimer = null;
 var focusRefreshTimer = null;
 var isRefreshingCloud = false;
 var workbookCompensationUserId = '';
 var workbookDeletionRetryTimer = null;
+var workbookInboundState = {running:false,lastAt:'',applied:0,conflicts:0,pending:0,lastError:''};
+var workbookConflictState = {loading:false,loaded:false,items:[],visibleConflictCount:0,lastError:'',lastLoadedAt:'',resolving:{}};
 var cloudBaseline = {issues:[],knowledge:[],archives:[],dailySupps:{}};
+var cloudServerBaseline = {issues:[],knowledge:[],archives:[],dailySupps:{}};
 var cloudRevision = '';
+var cloudVersions = {};
+var cloudSnapshotId = '';
 var pendingHistoryOps = {};
 var cloudState = {text:'已连接 Supabase',color:'var(--success)'};
 
@@ -578,26 +655,23 @@ function businessWorkbookMessage(action,saveResult){
 async function requestWorkbookSync(reason,context){
   context=context||{};
   var clientRequestId=String(context.requestId||gid());
-  var requestedAttempts=context.disableRetry===true?1:(context.maxAttempts===undefined?3:Number(context.maxAttempts));
-  var maxAttempts=Number.isFinite(requestedAttempts)?Math.max(1,Math.min(3,Math.floor(requestedAttempts))):3;
   if(CLOUD_CONFIG.workbookSyncEnabled!==true)return {ok:true,skipped:true,status:'disabled',workbookSynced:false,pending:false,requestId:clientRequestId,attempts:0};
   if(!db||!db.functions||typeof db.functions.invoke!=='function')return {ok:false,skipped:true,status:'unavailable',workbookSynced:false,pending:true,requestId:clientRequestId,attempts:0};
-  var functionName=CLOUD_CONFIG.workbookSyncFunction||'kdocs-workbook-sync';
+  var functionName=String(context.functionName||CLOUD_CONFIG.workbookSyncFunction||'kdocs-workbook-sync');
   var invokeContext=Object.assign({},context);
-  delete invokeContext.maxAttempts;
-  delete invokeContext.disableRetry;
+  delete invokeContext.functionName;
   // body 在全部重试中保持不变，尤其 requestId 不变，避免同一次保存产生重复同步任务。
   var body=Object.assign({reason:reason||'workbench_data_saved',requestedAt:nowIso()},invokeContext,{requestId:clientRequestId});
   var lastDetails=null;
   var attempts=0;
-  for(var attempt=0;attempt<maxAttempts;attempt++){
+  for(var attempt=0;attempt<3;attempt++){
     attempts=attempt+1;
     try{
       var result=await db.functions.invoke(functionName,{body:body});
       var data=result.data&&typeof result.data==='object'?result.data:{};
       if(result.error){
         lastDetails=workbookSyncErrorDetails(result.error,data);
-        if(attempt<maxAttempts-1&&isRetryableWorkbookSyncError(lastDetails)){
+        if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
           await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
           continue;
         }
@@ -610,20 +684,20 @@ async function requestWorkbookSync(reason,context){
       }
       if(status==='busy'){
         lastDetails={status:202,code:'SYNC_BUSY',message:'表格同步队列持续繁忙'};
-        if(attempt>=maxAttempts-1)break;
+        if(attempt>=2)break;
         var retrySeconds=Math.max(1,Math.min(10,Number(data.retryAfterSeconds)||2));
         await workbookSyncDelay(retrySeconds*1000);
         continue;
       }
       lastDetails=workbookSyncErrorDetails(null,data);
-      if(attempt<maxAttempts-1&&isRetryableWorkbookSyncError(lastDetails)){
+      if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
         await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
         continue;
       }
       break;
     }catch(error){
       lastDetails=workbookSyncErrorDetails(error,{});
-      if(attempt<maxAttempts-1&&isRetryableWorkbookSyncError(lastDetails)){
+      if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
         await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
         continue;
       }
@@ -634,6 +708,508 @@ async function requestWorkbookSync(reason,context){
   console.error('[商云宝] 工单表同步请求失败',lastDetails&&lastDetails.error||lastDetails);
   setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
   return {ok:false,status:'pending',workbookSynced:false,pending:true,error:lastDetails&&lastDetails.error||lastDetails,details:lastDetails,requestId:clientRequestId,attempts:attempts};
+}
+function workbookBidirectionalEnabled(){
+  return CLOUD_CONFIG.workbookBidirectionalEnabled===true;
+}
+function workbookMemberListSignature(){
+  return activeAssigneeNames().map(function(name){
+    var profile=knownAssigneeProfile(name)||{};
+    return String(profile.userId||profile.id||'')+':'+name;
+  }).sort().join('|');
+}
+async function refreshWorkbookMemberDropdown(options){
+  options=options||{};
+  if(CLOUD_CONFIG.workbookSyncEnabled!==true||!STATE.user||!db)return {ok:true,skipped:true,status:'disabled'};
+  var signature=workbookMemberListSignature();
+  if(!signature)return {ok:false,skipped:true,status:'no_active_members'};
+  if(!options.force&&refreshWorkbookMemberDropdown.lastSignature===signature)return {ok:true,skipped:true,status:'unchanged'};
+  var result=await requestWorkbookSync('member_list_changed',{
+    mode:'refresh_members',ownerUserId:String(STATE.user.userId||''),
+    requestId:'member-list:'+signature
+  });
+  if(result&&result.ok===true)refreshWorkbookMemberDropdown.lastSignature=signature;
+  return result;
+}
+refreshWorkbookMemberDropdown.lastSignature='';
+function workbookInboundCounts(data){
+  data=data&&typeof data==='object'?data:{};
+  var ticketApplied=Number(data.inboundTicketsApplied)||0;
+  var followApplied=Number(data.inboundFollowupsApplied)||0;
+  var directApplied=Number(data.inboundApplied);
+  var visibleConflictCount=Number(data.visibleConflictCount);
+  var hasVisibleConflictCount=data.visibleConflictCount!==undefined&&data.visibleConflictCount!==null&&isFinite(visibleConflictCount);
+  return {
+    applied:isFinite(directApplied)?directApplied:(ticketApplied+followApplied),
+    // visibleConflictCount 是调用者真正有权处理的冲突总数；旧字段只作为兼容兜底。
+    conflicts:hasVisibleConflictCount?Math.max(0,visibleConflictCount):(Number(data.inboundConflicts||data.conflictsCreated)||0),
+    pending:Number(data.inboundPending||data.conflictsPending)||0
+  };
+}
+function resetWorkbookConflictState(){
+  workbookConflictState={loading:false,loaded:false,items:[],visibleConflictCount:0,lastError:'',lastLoadedAt:'',resolving:{}};
+  workbookInboundState.conflicts=0;
+}
+function workbookConflictValue(source,snakeKey,camelKey){
+  source=source&&typeof source==='object'?source:{};
+  if(Object.prototype.hasOwnProperty.call(source,snakeKey))return source[snakeKey];
+  return source[camelKey];
+}
+function normalizeWorkbookConflict(item){
+  item=item&&typeof item==='object'?item:{};
+  var conflictId=Number(workbookConflictValue(item,'conflict_id','conflictId'));
+  var expectedVersion=Number(workbookConflictValue(item,'expected_version','expectedVersion'));
+  return {
+    conflictKind:'wps',
+    conflictId:isFinite(conflictId)?conflictId:0,
+    eventKey:String(workbookConflictValue(item,'event_key','eventKey')||''),
+    ownerUserId:String(workbookConflictValue(item,'owner_user_id','ownerUserId')||''),
+    ownerName:String(workbookConflictValue(item,'owner_name','ownerName')||''),
+    issueId:String(workbookConflictValue(item,'issue_id','issueId')||''),
+    ticketNo:String(workbookConflictValue(item,'ticket_no','ticketNo')||''),
+    sourceRowKey:String(workbookConflictValue(item,'source_row_key','sourceRowKey')||''),
+    fieldName:String(workbookConflictValue(item,'field_name','fieldName')||''),
+    baseValue:workbookConflictValue(item,'base_value','baseValue'),
+    currentValue:workbookConflictValue(item,'current_value','currentValue'),
+    incomingValue:workbookConflictValue(item,'incoming_value','incomingValue'),
+    incomingBaseVersion:Number(workbookConflictValue(item,'incoming_base_version','incomingBaseVersion'))||0,
+    recordedCurrentVersion:Number(workbookConflictValue(item,'recorded_current_version','recordedCurrentVersion'))||0,
+    expectedVersion:isFinite(expectedVersion)&&expectedVersion>=0?expectedVersion:0,
+    status:String(workbookConflictValue(item,'status','status')||'open'),
+    resolution:String(workbookConflictValue(item,'resolution','resolution')||''),
+    resolutionRequestedAt:String(workbookConflictValue(item,'resolution_requested_at','resolutionRequestedAt')||''),
+    createdAt:String(workbookConflictValue(item,'created_at','createdAt')||'')
+  };
+}
+function normalizeWorkbenchSaveConflict(item){
+  item=item&&typeof item==='object'?item:{};
+  var conflictId=Number(workbookConflictValue(item,'conflict_id','conflictId'));
+  var expectedVersion=Number(workbookConflictValue(item,'current_field_version','currentFieldVersion'));
+  return {
+    conflictKind:'workbench_save',
+    conflictId:isFinite(conflictId)?conflictId:0,
+    ownerUserId:String(workbookConflictValue(item,'owner_user_id','ownerUserId')||''),
+    ownerName:String(workbookConflictValue(item,'owner_name','ownerName')||''),
+    collectionName:String(workbookConflictValue(item,'collection_name','collectionName')||''),
+    recordKey:String(workbookConflictValue(item,'record_key','recordKey')||''),
+    issueId:String(workbookConflictValue(item,'issue_id','issueId')||''),
+    ticketNo:String(workbookConflictValue(item,'ticket_no','ticketNo')||''),
+    fieldName:String(workbookConflictValue(item,'field_name','fieldName')||''),
+    conflictType:String(workbookConflictValue(item,'conflict_type','conflictType')||'field_conflict'),
+    baseValue:workbookConflictValue(item,'base_value','baseValue'),
+    currentValue:workbookConflictValue(item,'current_value','currentValue'),
+    incomingValue:workbookConflictValue(item,'incoming_value','incomingValue'),
+    baseFieldVersion:Number(workbookConflictValue(item,'base_field_version','baseFieldVersion'))||0,
+    expectedVersion:isFinite(expectedVersion)&&expectedVersion>=0?expectedVersion:0,
+    status:String(workbookConflictValue(item,'status','status')||'open'),
+    createdAt:String(workbookConflictValue(item,'created_at','createdAt')||'')
+  };
+}
+var WORKBOOK_MUTABLE_CONFLICT_FIELDS=['shopName','shopDesc','urgency','assigneeName','deadline'];
+var WORKBOOK_KEEP_DELETED_CONFLICT_FIELDS=['__deleted__','__delete__'];
+var WORKBOOK_WPS_DELETE_NOT_ALLOWED_FIELD='__wps_delete_not_allowed__';
+function workbookConflictFieldLabel(fieldName){
+  var labels={shopName:'门店名称',shopDesc:'问题简述',urgency:'紧急程度',priority:'优先级',assigneeId:'跟进人账号',assigneeName:'跟进人',deadline:'计划闭环日期',progress:'跟进状态',__deleted__:'工单删除',__delete__:'工单删除',__wps_delete_not_allowed__:'WPS误清空',__record__:'整条记录'};
+  if(labels[fieldName])return labels[fieldName];
+  if(/^followUps\./.test(fieldName))return '跟进记录';
+  return fieldName||'结构字段';
+}
+function workbookConflictFieldResolutions(conflict){
+  conflict=normalizeWorkbookConflict(conflict);
+  if(WORKBOOK_KEEP_DELETED_CONFLICT_FIELDS.indexOf(conflict.fieldName)>=0)return ['keep_deleted'];
+  if(conflict.fieldName===WORKBOOK_WPS_DELETE_NOT_ALLOWED_FIELD)return ['keep_workbench'];
+  if(/^followUps\./.test(conflict.fieldName))return ['keep_workbench'];
+  if(WORKBOOK_MUTABLE_CONFLICT_FIELDS.indexOf(conflict.fieldName)>=0)return ['keep_workbench','use_workbook'];
+  return ['keep_workbench'];
+}
+function workbookConflictAllowedResolutions(conflict){
+  conflict=normalizeWorkbookConflict(conflict);
+  if(conflict.status==='pending_wps')return [];
+  return workbookConflictFieldResolutions(conflict);
+}
+function workbookConflictPendingResolutionAllowed(conflict){
+  conflict=normalizeWorkbookConflict(conflict);
+  return conflict.status==='pending_wps'&&workbookConflictFieldResolutions(conflict).indexOf(conflict.resolution)>=0;
+}
+function workbookConflictResolutionLabel(resolution,conflict){
+  conflict=normalizeWorkbookConflict(conflict);
+  if(conflict.fieldName===WORKBOOK_WPS_DELETE_NOT_ALLOWED_FIELD)return resolution==='keep_workbench'?'恢复客户管家台工单':'受保护操作';
+  if(resolution==='keep_deleted')return '保持删除';
+  if(resolution==='use_workbook')return '采用WPS当前值';
+  if(/^followUps\./.test(conflict.fieldName))return '恢复客户管家台原跟进';
+  return '保留客户管家台当前值';
+}
+function workbookConflictValueText(value){
+  if(value===null||value===undefined)return '（空值）';
+  if(typeof value==='string')return value===''?'（空字符串）':value;
+  try{return JSON.stringify(value,null,2)}catch(error){return String(value)}
+}
+function workbookVisibleConflictCount(){
+  var count=Number(workbookConflictState.visibleConflictCount);
+  return isFinite(count)&&count>0?Math.floor(count):0;
+}
+function updateWorkbookConflictIndicators(){
+  var count=workbookVisibleConflictCount();
+  var countEl=document.getElementById('workbook-conflict-count');
+  if(countEl)countEl.textContent=String(count);
+  var button=document.getElementById('workbook-conflict-button');
+  if(button){
+    if(count>0)button.classList.add('btn-outline-danger');else button.classList.remove('btn-outline-danger');
+    button.setAttribute('aria-label','打开数据冲突中心，当前'+count+'项');
+  }
+  var indicator=document.getElementById('workbook-bidirectional-state');
+  if(indicator){
+    indicator.textContent=workbookInboundStatusText();
+    indicator.style.color=count>0?'var(--danger)':'var(--primary)';
+  }
+}
+async function loadWorkbookConflicts(options){
+  options=options||{};
+  if(!STATE.user||!db||typeof db.rpc!=='function')return {ok:false,skipped:true,status:'unavailable',items:[]};
+  if(workbookConflictState.loading)return {ok:true,skipped:true,status:'busy',items:workbookConflictState.items};
+  workbookConflictState.loading=true;
+  workbookConflictState.lastError='';
+  updateWorkbookConflictIndicators();
+  try{
+    var items=[];
+    if(workbookBidirectionalEnabled()){
+      var result=await db.rpc('list_workbook_ingest_conflicts',{p_limit:500});
+      if(result.error)throw result.error;
+      var rows=Array.isArray(result.data)?result.data:[];
+      items=items.concat(rows.map(normalizeWorkbookConflict).filter(function(item){return item.conflictId>0}));
+    }
+    var saveResult=await db.rpc('list_workbench_save_conflicts',{p_limit:500});
+    if(saveResult.error)throw saveResult.error;
+    var saveRows=Array.isArray(saveResult.data)?saveResult.data:[];
+    items=items.concat(saveRows.map(normalizeWorkbenchSaveConflict).filter(function(item){return item.conflictId>0}));
+    items.sort(function(a,b){return String(a.createdAt).localeCompare(String(b.createdAt))||a.conflictId-b.conflictId});
+    workbookConflictState.items=items;
+    workbookConflictState.visibleConflictCount=items.length;
+    workbookConflictState.loaded=true;
+    workbookConflictState.lastLoadedAt=nowIso();
+    workbookInboundState.conflicts=items.length;
+    updateWorkbookConflictIndicators();
+    return {ok:true,status:'loaded',items:items,visibleConflictCount:items.length};
+  }catch(error){
+    console.error('[商云宝] 数据冲突列表加载失败',error);
+    workbookConflictState.lastError=String(error&&error.message||error||'冲突列表加载失败');
+    if(!options.silent)T('数据冲突列表暂时无法加载，请稍后重试');
+    return {ok:false,status:'error',error:error,items:workbookConflictState.items};
+  }finally{
+    workbookConflictState.loading=false;
+    updateWorkbookConflictIndicators();
+  }
+}
+function workbookConflictValuePanel(cssClass,label,value){
+  return '<div class="workbook-conflict-value '+cssClass+'"><div class="wcv-label">'+label+'</div><div class="wcv-content">'+esc(workbookConflictValueText(value))+'</div></div>';
+}
+function workbenchSaveConflictCanUseAttempted(conflict){
+  conflict=normalizeWorkbenchSaveConflict(conflict);
+  if(['field_conflict','delete_conflict'].indexOf(conflict.conflictType)<0)return false;
+  if(conflict.fieldName==='__delete__')return conflict.conflictType==='delete_conflict';
+  if(/^__/.test(conflict.fieldName)||/^followUps\./.test(conflict.fieldName))return false;
+  return true;
+}
+function workbenchSaveConflictCardHtml(conflict){
+  conflict=normalizeWorkbenchSaveConflict(conflict);
+  var resolving=!!workbookConflictState.resolving['save:'+String(conflict.conflictId)];
+  var canUseAttempted=workbenchSaveConflictCanUseAttempted(conflict);
+  var isDelete=conflict.conflictType==='delete_conflict';
+  var title=(conflict.ticketNo?'工单 '+conflict.ticketNo:(conflict.collectionName==='issues'?'未编号工单':conflict.collectionName+' '+conflict.recordKey))+' · '+workbookConflictFieldLabel(conflict.fieldName);
+  var h='<section class="workbook-conflict-card" data-save-conflict-id="'+conflict.conflictId+'">';
+  h+='<div class="workbook-conflict-title"><strong>'+esc(title)+'</strong><span class="workbook-conflict-status">客户台保存冲突</span></div>';
+  h+='<div class="workbook-conflict-meta">';
+  if(conflict.ownerName)h+='<span>负责人：'+esc(conflict.ownerName)+'</span>';
+  h+='<span>当前版本：'+conflict.expectedVersion+'</span>';
+  if(conflict.createdAt)h+='<span>发现时间：'+esc(formatDateTime(conflict.createdAt))+'</span>';
+  h+='</div><div class="workbook-conflict-values">';
+  h+=workbookConflictValuePanel('base','A · 本次编辑前基线',conflict.baseValue);
+  h+=workbookConflictValuePanel('workbench','B · 云端当前值（含WPS同步）',conflict.currentValue);
+  h+=workbookConflictValuePanel('workbook','C · 本次填写尝试值',conflict.incomingValue);
+  h+='</div>';
+  if(!canUseAttempted)h+='<div class="workbook-conflict-warning">该项涉及永久身份、已删除工单或不可改写的跟进历史，只能保留云端当前值。</div>';
+  else h+='<div class="workbook-conflict-warning">系统已暂停冲突字段，没有覆盖B或C。请人工选择；提交前会再次核对版本。</div>';
+  h+='<div class="workbook-conflict-actions">';
+  if(resolving){
+    h+='<button class="btn btn-sm" disabled>正在安全处理…</button>';
+  }else{
+    h+='<button class="btn btn-sm btn-primary" onclick="resolveWorkbenchSaveConflict('+conflict.conflictId+',\'keep_current\')">保留云端当前值</button>';
+    if(canUseAttempted)h+='<button class="btn btn-sm'+(isDelete?' btn-outline-danger':'')+'" onclick="resolveWorkbenchSaveConflict('+conflict.conflictId+',\'use_attempted\')">'+(isDelete?'执行本次删除':'采用本次填写值')+'</button>';
+  }
+  h+='</div></section>';
+  return h;
+}
+function workbookConflictCardHtml(conflict){
+  if(conflict&&conflict.conflictKind==='workbench_save')return workbenchSaveConflictCardHtml(conflict);
+  conflict=normalizeWorkbookConflict(conflict);
+  var pending=conflict.status==='pending_wps';
+  var resolving=!!workbookConflictState.resolving[String(conflict.conflictId)];
+  var allowed=workbookConflictAllowedResolutions(conflict);
+  var isDeletion=WORKBOOK_KEEP_DELETED_CONFLICT_FIELDS.indexOf(conflict.fieldName)>=0;
+  var isWpsDeleteNotAllowed=conflict.fieldName===WORKBOOK_WPS_DELETE_NOT_ALLOWED_FIELD;
+  var isFollowUp=/^followUps\./.test(conflict.fieldName);
+  var canContinuePending=workbookConflictPendingResolutionAllowed(conflict);
+  var title=(conflict.ticketNo?'工单 '+conflict.ticketNo:'未编号工单')+' · '+workbookConflictFieldLabel(conflict.fieldName);
+  var h='<section class="workbook-conflict-card'+(pending?' pending':'')+'" data-conflict-id="'+conflict.conflictId+'">';
+  h+='<div class="workbook-conflict-title"><strong>'+esc(title)+'</strong><span class="workbook-conflict-status">'+(pending?'等待WPS确认':'待处理')+'</span></div>';
+  h+='<div class="workbook-conflict-meta">';
+  if(conflict.ownerName)h+='<span>负责人：'+esc(conflict.ownerName)+'</span>';
+  if(conflict.sourceRowKey)h+='<span>WPS行：'+esc(conflict.sourceRowKey)+'</span>';
+  h+='<span>当前版本：'+conflict.expectedVersion+'</span>';
+  if(conflict.createdAt)h+='<span>发现时间：'+esc(formatDateTime(conflict.createdAt))+'</span>';
+  if(pending&&conflict.resolutionRequestedAt)h+='<span>提交时间：'+esc(formatDateTime(conflict.resolutionRequestedAt))+'</span>';
+  h+='</div>';
+  h+='<div class="workbook-conflict-values">';
+  h+=workbookConflictValuePanel('base','双方上次一致值',conflict.baseValue);
+  h+=workbookConflictValuePanel('workbench','客户管家台当前值',conflict.currentValue);
+  h+=workbookConflictValuePanel('workbook','WPS当前值',conflict.incomingValue);
+  h+='</div>';
+  if(pending&&canContinuePending)h+='<div class="workbook-conflict-warning">正在回写WPS。原选择已锁定为“'+esc(workbookConflictResolutionLabel(conflict.resolution,conflict))+'”；可以继续完成回写，但不能改选另一边。</div>';
+  else if(pending)h+='<div class="workbook-conflict-warning">后台记录的原处理选择与当前保护规则不一致，已停止继续写入；请刷新后重试。</div>';
+  else if(isDeletion)h+='<div class="workbook-conflict-warning">该工单已在客户管家台删除。为保护删除记录，只能确认保持删除，不能从WPS恢复。</div>';
+  else if(isWpsDeleteNotAllowed)h+='<div class="workbook-conflict-warning">WPS行被误清空，但客户管家台工单仍存在；这里只能恢复客户管家台工单，不会确认删除。</div>';
+  else if(isFollowUp)h+='<div class="workbook-conflict-warning">跟进历史只增不改。这里只允许恢复客户管家台原跟进，WPS改写不会覆盖原记录。</div>';
+  else if(allowed.length===1)h+='<div class="workbook-conflict-warning">这是受保护的结构字段，只能保留客户管家台当前值。</div>';
+  if(!pending){
+    h+='<div class="workbook-conflict-note"><label for="workbook-conflict-note-'+conflict.conflictId+'">处理备注（可选）</label><textarea id="workbook-conflict-note-'+conflict.conflictId+'" maxlength="2000" placeholder="可填写判断依据，最多2000字"'+(resolving?' disabled':'')+'></textarea></div>';
+  }
+  h+='<div class="workbook-conflict-actions">';
+  if(pending){
+    if(resolving){
+      h+='<button class="btn btn-sm" disabled>正在继续完成WPS回写…</button>';
+    }else if(canContinuePending){
+      h+='<button class="btn btn-sm btn-primary" onclick="continueWorkbookConflictResolution('+conflict.conflictId+')">继续完成回写：'+esc(workbookConflictResolutionLabel(conflict.resolution,conflict))+'</button>';
+    }else{
+      h+='<button class="btn btn-sm" disabled>正在回写WPS，等待后台恢复</button>';
+    }
+  }else if(resolving){
+    h+='<button class="btn btn-sm" disabled>正在安全提交…</button>';
+  }else if(isDeletion){
+    h+='<button class="btn btn-sm btn-outline-danger" onclick="resolveWorkbookConflict('+conflict.conflictId+',\'keep_deleted\')">确认保持删除</button>';
+  }else if(isWpsDeleteNotAllowed){
+    h+='<button class="btn btn-sm btn-primary" onclick="resolveWorkbookConflict('+conflict.conflictId+',\'keep_workbench\')">恢复客户管家台工单</button>';
+  }else if(isFollowUp){
+    h+='<button class="btn btn-sm btn-primary" onclick="resolveWorkbookConflict('+conflict.conflictId+',\'keep_workbench\')">恢复客户管家台原跟进</button>';
+  }else{
+    if(allowed.indexOf('keep_workbench')>=0)h+='<button class="btn btn-sm btn-primary" onclick="resolveWorkbookConflict('+conflict.conflictId+',\'keep_workbench\')">保留客户管家台当前值</button>';
+    if(allowed.indexOf('use_workbook')>=0)h+='<button class="btn btn-sm" onclick="resolveWorkbookConflict('+conflict.conflictId+',\'use_workbook\')">采用WPS当前值</button>';
+  }
+  h+='</div></section>';
+  return h;
+}
+function workbookConflictCenterHtml(){
+  var count=workbookVisibleConflictCount();
+  var h='<div class="workbook-conflict-header"><div><h3>数据冲突中心（'+count+'）</h3><div class="workbook-conflict-sub">这里同时展示WPS入站冲突和客户台保存冲突。每项均保留基线、云端当前值和本次尝试值；版本变化时停止写入。</div></div><button class="icon-btn" aria-label="关闭冲突中心" onclick="closeModal()">×</button></div>';
+  h+='<div class="workbook-conflict-body">';
+  if(workbookConflictState.loading&&!workbookConflictState.loaded){
+    h+='<div class="empty">正在读取数据冲突…</div>';
+  }else if(workbookConflictState.lastError&&!workbookConflictState.loaded){
+    h+='<div class="readonly-note">冲突列表暂时加载失败，未对任何数据执行覆盖。</div><div class="modal-actions"><button class="btn btn-primary" onclick="openWorkbookConflictCenter()">重新加载</button></div>';
+  }else if(!workbookConflictState.items.length){
+    h+='<div class="empty">当前没有待处理的数据冲突</div>';
+  }else{
+    workbookConflictState.items.forEach(function(item){h+=workbookConflictCardHtml(item)});
+  }
+  h+='</div>';
+  return h;
+}
+function showWorkbookConflictCenterModal(){showModal(workbookConflictCenterHtml(),'workbook-conflict-modal')}
+async function openWorkbookConflictCenter(){
+  showWorkbookConflictCenterModal();
+  var loaded=await loadWorkbookConflicts({force:true});
+  showWorkbookConflictCenterModal();
+  return loaded;
+}
+async function resolveWorkbenchSaveConflict(conflictId,resolution){
+  conflictId=Number(conflictId);
+  var conflict=workbookConflictState.items.find(function(item){return item.conflictKind==='workbench_save'&&item.conflictId===conflictId});
+  if(!conflict){T('该客户台保存冲突已变化，正在刷新列表');await loadWorkbookConflicts({force:true,silent:true});return {ok:false,status:'stale'}}
+  if(['keep_current','use_attempted'].indexOf(resolution)<0)return {ok:false,status:'invalid_resolution'};
+  if(resolution==='use_attempted'&&!workbenchSaveConflictCanUseAttempted(conflict)){T('该结构项不能采用本次尝试值');return {ok:false,status:'protected'}}
+  if(resolution==='use_attempted'&&conflict.conflictType==='delete_conflict'&&!confirm('确认执行本次删除？删除后仍会保留工单号和同步审计记录。'))return {ok:true,skipped:true,status:'cancelled'};
+  var resolvingKey='save:'+String(conflictId);
+  if(workbookConflictState.resolving[resolvingKey])return {ok:true,skipped:true,status:'busy'};
+  workbookConflictState.resolving[resolvingKey]=true;
+  var modalWasOpen=!!document.querySelector('.workbook-conflict-modal');
+  if(modalWasOpen)showWorkbookConflictCenterModal();
+  try{
+    var response=await db.rpc('resolve_workbench_save_conflict',{
+      p_conflict_id:conflictId,
+      p_resolution:resolution,
+      p_expected_current_version:conflict.expectedVersion
+    });
+    if(response.error)throw response.error;
+    delete workbookConflictState.resolving[resolvingKey];
+    await loadWorkbookConflicts({force:true,silent:true});
+    await refreshFromCloud({source:'workbench-save-conflict',silent:true});
+    T(resolution==='use_attempted'?'已在版本核对通过后采用本次填写值':'已确认保留云端当前值');
+    if(modalWasOpen)showWorkbookConflictCenterModal();
+    return {ok:true,status:'resolved',data:response.data};
+  }catch(error){
+    delete workbookConflictState.resolving[resolvingKey];
+    await loadWorkbookConflicts({force:true,silent:true});
+    await refreshFromCloud({source:'workbench-save-conflict-stale',silent:true});
+    var textValue=String(error&&error.message||error||'');
+    T(/CHANGED_SINCE_REVIEW|40001|版本/i.test(textValue)?'云端值刚刚又发生变化，本次未写入；请按刷新后的内容重新确认':'冲突处理未完成，系统没有覆盖云端值');
+    if(modalWasOpen)showWorkbookConflictCenterModal();
+    return {ok:false,status:'error',error:error};
+  }
+}
+async function continueWorkbookConflictResolution(conflictId){
+  conflictId=Number(conflictId);
+  var conflict=workbookConflictState.items.find(function(item){return item.conflictKind==='wps'&&item.conflictId===conflictId});
+  if(!conflict||conflict.status!=='pending_wps'){
+    T('该待回写冲突已变化，正在刷新列表');
+    await loadWorkbookConflicts({force:true,silent:true});
+    return {ok:false,status:'stale'};
+  }
+  if(!workbookConflictPendingResolutionAllowed(conflict)){
+    T('后台未返回原处理选择，当前不能安全重试');
+    return {ok:false,status:'missing_pending_resolution'};
+  }
+  return resolveWorkbookConflict(conflictId,conflict.resolution,{continuePending:true});
+}
+function workbookConflictResolutionNote(conflictId){
+  var el=document.getElementById('workbook-conflict-note-'+conflictId);
+  return el&&typeof el.value==='string'?el.value.trim().slice(0,2000):'';
+}
+function workbookConflictChangedSinceReview(details){
+  details=details||{};
+  var textValue=String(details.code||'')+' '+String(details.message||'');
+  return details.status===425||/WORKBOOK_CONFLICT_CHANGED_SINCE_REVIEW|ROW_CHANGED_SINCE_SNAPSHOT|版本.*变化|行.*变化|changed since review/i.test(textValue);
+}
+async function resolveWorkbookConflict(conflictId,resolution,options){
+  options=options||{};
+  conflictId=Number(conflictId);
+  if(workbookConflictState.loading){T('冲突列表正在刷新，请稍候再确认');return {ok:true,skipped:true,status:'list_loading'}}
+  var conflict=workbookConflictState.items.find(function(item){return item.conflictKind==='wps'&&item.conflictId===conflictId});
+  if(!conflict){
+    T('该冲突已变化或已处理，正在刷新列表');
+    await loadWorkbookConflicts({force:true,silent:true});
+    return {ok:false,status:'stale'};
+  }
+  if(conflict.status==='pending_wps'&&(!options.continuePending||resolution!==conflict.resolution)){
+    T('该冲突正在回写WPS，只能沿用原处理选择继续，不能重复选择或改选');
+    return {ok:true,skipped:true,status:'pending_wps'};
+  }
+  if(workbookConflictState.resolving[String(conflictId)])return {ok:true,skipped:true,status:'busy'};
+  var allowed=workbookConflictAllowedResolutions(conflict);
+  if(conflict.status!=='pending_wps'&&allowed.indexOf(resolution)<0){T('该冲突不允许执行此操作');return {ok:false,status:'invalid_resolution'}}
+  if(conflict.status==='pending_wps'&&!workbookConflictPendingResolutionAllowed(conflict)){T('后台原处理选择无效，请刷新后重试');return {ok:false,status:'invalid_pending_resolution'}}
+  if(resolution==='keep_deleted'&&!confirm('确认保持删除？客户管家台中的删除记录会继续保留，WPS内容不会恢复。'))return {ok:true,skipped:true,status:'cancelled'};
+  var expectedVersion=Number(conflict.expectedVersion);
+  if(!isFinite(expectedVersion)||expectedVersion<0){T('冲突版本无效，请刷新后重试');return {ok:false,status:'invalid_version'}}
+  if(!db||!db.functions||typeof db.functions.invoke!=='function')return {ok:false,status:'unavailable'};
+  var note=workbookConflictResolutionNote(conflictId);
+  var requestId='conflict:'+String(STATE.user&&STATE.user.userId||'')+':'+conflictId+':'+gid();
+  var body={mode:'bidirectional',action:'resolve_conflict',conflictId:conflictId,resolution:resolution,expectedVersion:expectedVersion,requestId:requestId};
+  if(note)body.resolutionNote=note;
+  var modalWasOpen=!!document.querySelector('.workbook-conflict-modal');
+  workbookConflictState.resolving[String(conflictId)]=true;
+  if(modalWasOpen)showWorkbookConflictCenterModal();
+  try{
+    var functionName=String(CLOUD_CONFIG.workbookBidirectionalFunction||'kdocs-workbook-ingest');
+    var result=await db.functions.invoke(functionName,{body:body});
+    var data=result.data&&typeof result.data==='object'?result.data:{};
+    if(!result.error&&data.ok===true&&(data.status==='succeeded'||data.status==='unchanged')){
+      delete workbookConflictState.resolving[String(conflictId)];
+      await loadWorkbookConflicts({force:true,silent:true});
+      await refreshFromCloud({source:'workbook-conflict',silent:true});
+      T(resolution==='use_workbook'?'已采用WPS当前值并完成双向刷新':'冲突已安全处理并完成双向刷新');
+      if(modalWasOpen)showWorkbookConflictCenterModal();
+      return {ok:true,status:data.status,data:data,requestId:requestId};
+    }
+    if(!result.error&&data.ok===true&&(data.status==='busy'||data.status==='pending_wps')){
+      delete workbookConflictState.resolving[String(conflictId)];
+      await loadWorkbookConflicts({force:true,silent:true});
+      T(data.status==='pending_wps'?'该冲突正在同步到WPS，不能重复提交':'WPS正在处理其他同步，请稍后再试');
+      if(modalWasOpen)showWorkbookConflictCenterModal();
+      return {ok:false,status:data.status,data:data,requestId:requestId};
+    }
+    var details=workbookSyncErrorDetails(result.error,data);
+    var requestError=new Error(details.message);requestError.workbookDetails=details;throw requestError;
+  }catch(error){
+    var errorDetails=error&&error.workbookDetails?error.workbookDetails:workbookSyncErrorDetails(error,{});
+    var changed=workbookConflictChangedSinceReview(errorDetails);
+    delete workbookConflictState.resolving[String(conflictId)];
+    await loadWorkbookConflicts({force:true,silent:true});
+    if(changed){
+      await refreshFromCloud({source:'workbook-conflict-stale',silent:true});
+      T('版本或WPS行刚刚发生变化，本次未覆盖任何一边；请按刷新后的内容重新确认');
+    }else{
+      T('冲突处理未完成，系统未覆盖任何一边，请稍后重试');
+    }
+    if(modalWasOpen)showWorkbookConflictCenterModal();
+    return {ok:false,status:'error',changedSinceReview:changed,error:errorDetails,requestId:requestId};
+  }
+}
+function workbookInboundStatusText(){
+  if(workbookVisibleConflictCount()>0)return '数据冲突 '+workbookVisibleConflictCount()+' 项（已停止覆盖）';
+  if(!workbookBidirectionalEnabled())return 'WPS双向回写未启用';
+  if(workbookInboundState.running)return 'WPS双向核对中';
+  if(workbookConflictState.lastError)return 'WPS冲突列表待重试';
+  if(workbookInboundState.lastError)return 'WPS双向待重试';
+  if(workbookInboundState.lastAt)return 'WPS双向已保护';
+  return 'WPS双向等待首次核对';
+}
+async function pullWorkbookInbound(options){
+  options=options||{};
+  if(!workbookBidirectionalEnabled())return {ok:true,skipped:true,status:'disabled'};
+  if(!STATE.user||!db)return {ok:false,skipped:true,status:'unavailable'};
+  if(workbookInboundState.running)return {ok:true,skipped:true,status:'busy'};
+  if(pendingSaves>0&&!options.force)return {ok:true,skipped:true,status:'local_save_pending'};
+  workbookInboundState.running=true;
+  workbookInboundState.lastError='';
+  if(options.manual)setCloudStatus('正在核对WPS双向修改…','var(--warning)');
+  try{
+    var result=await requestWorkbookSync('workbook_bidirectional_pull',{
+      mode:'bidirectional',ownerUserId:String(STATE.user.userId||''),
+      forceScan:options.manual===true,
+      functionName:CLOUD_CONFIG.workbookBidirectionalFunction||'kdocs-workbook-ingest',
+      requestId:'bidirectional:'+String(STATE.user.userId||'')+':'+gid()
+    });
+    if(!result||result.ok!==true){
+      workbookInboundState.lastError=String(result&&result.details&&result.details.message||'WPS双向回写待重试');
+      return result||{ok:false,status:'pending'};
+    }
+    var counts=workbookInboundCounts(result.data||{});
+    workbookInboundState.lastAt=nowIso();
+    workbookInboundState.applied=counts.applied;
+    workbookInboundState.conflicts=counts.conflicts;
+    workbookInboundState.pending=counts.pending;
+    workbookConflictState.visibleConflictCount=counts.conflicts;
+    // RPC列表是待办总表；Edge 的 visibleConflictCount 优先于旧统计字段，列表加载成功后再以列表总数校准。
+    if(db&&typeof db.rpc==='function'){
+      var conflictList=await loadWorkbookConflicts({force:true,silent:true});
+      if(conflictList&&conflictList.ok){counts.conflicts=Number(conflictList.visibleConflictCount)||0;workbookInboundState.conflicts=counts.conflicts}
+    }
+    if(counts.applied>0){
+      await refreshFromCloud({source:'workbook',silent:!options.manual});
+      setCloudStatus('已接收WPS '+counts.applied+' 项修改','var(--success)');
+    }else if(counts.conflicts>0){
+      setCloudStatus('WPS有 '+counts.conflicts+' 项冲突，已停止覆盖','var(--danger)');
+    }else if(options.manual){
+      setCloudStatus('WPS与客户管家台数据一致','var(--success)');
+    }
+    return Object.assign({},result,{inbound:counts});
+  }catch(error){
+    workbookInboundState.lastError=String(error&&error.message||error||'WPS双向回写失败');
+    if(options.manual)setCloudStatus('WPS双向核对失败，已进入重试','var(--warning)');
+    return {ok:false,status:'pending',pending:true,error:error};
+  }finally{
+    workbookInboundState.running=false;
+    updateWorkbookConflictIndicators();
+  }
+}
+async function manualWorkbookBidirectionalSync(){
+  var result=await pullWorkbookInbound({manual:true,force:true});
+  if(result&&result.inbound&&result.inbound.conflicts>0){
+    T('检测到同一字段被两边同时修改，系统未覆盖任何一边；请在冲突中心确认');
+  }else if(result&&result.ok){
+    T(result.inbound&&result.inbound.applied>0?'已接收WPS修改并更新客户管家台':'WPS与客户管家台数据一致');
+  }else{
+    T('WPS双向核对暂未完成，系统会自动重试');
+  }
 }
 function legacyWorkbookDrainBlockers(){
   var data=STATE&&STATE.data||{};
@@ -869,7 +1445,7 @@ function mergeUserData(base,local,remote,conflicts){
   mergedIssues.forEach(function(issue){
     if(issue.currentStatus!=='已完结'||archiveByIssue[String(issue.id)])return;
     var historic=remote.archives.concat(base.archives).find(function(item){return String(item.sourceIssueId)===String(issue.id)});
-    var completionHistory=getIssueFollowUps(issue).filter(function(item){return (item.status==='已完结'||item.toProgress==='已完结')&&item.createdAt}).sort(function(a,b){return String(b.createdAt).localeCompare(String(a.createdAt))});
+    var completionHistory=getIssueFollowUps(issue).filter(function(item){return (item.status==='已完结'||item.toProgress==='已完结')&&(item.followedAt||item.createdAt)}).sort(compareHistoryTimelineDesc);
     var completionDate='';
     if(completionHistory.length){
       var completionTime=new Date(completionHistory[0].createdAt);
@@ -917,15 +1493,28 @@ function findAssigneeByName(name){
 }
 function assigneeOptionsHtml(selectedName){
   selectedName=normalizeAssigneeName(selectedName);
-  var inactiveNames={};
-  TEAM_PROFILES.forEach(function(item){
-    var name=normalizeAssigneeName(item.name);
-    if(name&&item.isActive===false)inactiveNames[name]=true;
-  });
-  var names=EXCEL_ASSIGNEE_NAMES.filter(function(name){return !inactiveNames[name]||name===selectedName});
+  var names=activeAssigneeNames();
   var invalidSelected=selectedName&&!isValidExcelAssignee(selectedName);
   var html='<option value=""'+((!selectedName||invalidSelected)?' selected':'')+'>'+(invalidSelected?'需重新选择（原：'+esc(selectedName)+'）':'请选择')+'</option>';
   names.forEach(function(name){html+='<option value="'+escAttr(name)+'"'+(name===selectedName?' selected':'')+'>'+esc(name)+'</option>'});
+  return html;
+}
+function issueOwnerProfile(ownerUserId){
+  ownerUserId=String(ownerUserId||'');
+  var profiles=Array.isArray(TEAM_PROFILES)?TEAM_PROFILES:[];
+  return profiles.find(function(item){return String(item&&item.userId||item&&item.id||'')===ownerUserId})||
+    (STATE.user&&String(STATE.user.userId||STATE.user.id||'')===ownerUserId?STATE.user:null);
+}
+function issueAssigneeOptionsHtml(selectedName,ownerUserId){
+  selectedName=normalizeAssigneeName(selectedName);
+  var owner=issueOwnerProfile(ownerUserId);
+  var ownerName=normalizeAssigneeName(owner&&owner.name||'');
+  if(!ownerName||owner&&owner.isActive===false)return assigneeOptionsHtml(selectedName);
+  var html='';
+  if(selectedName&&selectedName!==ownerName){
+    html+='<option value="'+escAttr(selectedName)+'" selected>'+esc(selectedName)+'（历史归属不一致）</option>';
+  }
+  html+='<option value="'+escAttr(ownerName)+'"'+((!selectedName||selectedName===ownerName)?' selected':'')+'>'+esc(ownerName)+'</option>';
   return html;
 }
 function isAdmin(user){return !!user&&user.role==='admin'}
@@ -978,8 +1567,10 @@ async function setMemberActive(userId,isActive){
   var result=await db.rpc('admin_set_member_active',{p_user_id:userId,p_active:!!isActive});
   if(result.error){T((isActive?'恢复':'移除')+'成员失败：'+result.error.message);return false}
   await loadImportedData();
+  var memberSync=await refreshWorkbookMemberDropdown({force:true});
   renderApp();
-  T(isActive?'成员账号已恢复':'成员已移除，历史业务数据仍完整保留');
+  var memberMessage=isActive?'成员账号已恢复':'成员已移除，历史业务数据仍完整保留';
+  T(memberMessage+(memberSync&&memberSync.ok===false?'；WPS下拉待后台重试':'，WPS下拉已同步'));
   return true;
 }
 function deletePasscode(userId){
@@ -1009,6 +1600,8 @@ async function updatePasscode(userId,updates){
   var result=await db.from('profiles').update(payload).eq('id',userId);
   if(result.error){T('成员信息保存失败：'+result.error.message);return false}
   await loadImportedData();
+  var memberSync=await refreshWorkbookMemberDropdown({force:true});
+  if(memberSync&&memberSync.ok===false)T('成员信息已保存，WPS下拉待后台重试');
   return true;
 }
 
@@ -1019,26 +1612,36 @@ function setCloudStatus(text,color){
   var el=document.getElementById('cloud-state');
   if(el){el.textContent=cloudState.text;el.style.color=cloudState.color}
 }
+function unwrapVersionedWorkbenchResult(data){
+  var value=Array.isArray(data)?data[0]:data;
+  if(value&&typeof value==='object'&&!value.payload){
+    var keys=Object.keys(value);
+    if(keys.length===1&&value[keys[0]]&&typeof value[keys[0]]==='object')value=value[keys[0]];
+  }
+  return value&&typeof value==='object'?value:{};
+}
 async function loadUserData(){
   if(!db||!STATE.user) return;
   var userId=STATE.user.userId;
-  var nextData=emptyUserData(),nextRevision='';
-  var result=await db.from('workbench_data').select('payload,updated_at').eq('user_id',userId).maybeSingle();
+  var result=await db.rpc('get_workbench_versioned_snapshot',{
+    p_reuse_snapshot_id:/^[0-9a-f]{32}$/i.test(String(cloudSnapshotId||''))?cloudSnapshotId:null
+  });
   if(result.error) throw result.error;
-  if(result.data&&result.data.payload){
-    nextData=normalizeUserData(result.data.payload);
-    nextRevision=result.data.updated_at||'';
-  }else{
-    var created=await db.from('workbench_data').upsert({user_id:userId,payload:nextData},{onConflict:'user_id'}).select('payload,updated_at').single();
-    if(created.error) throw created.error;
-    nextData=normalizeUserData(created.data.payload);
-    nextRevision=created.data.updated_at||'';
-  }
+  var snapshot=unwrapVersionedWorkbenchResult(result.data);
+  var rawPayload=cloneJson(snapshot.payload||emptyUserData());
+  var nextData=normalizeUserData(cloneJson(rawPayload));
+  var nextRevision=String(snapshot.updatedAt||snapshot.updated_at||'');
+  var nextVersions=snapshot.versions&&typeof snapshot.versions==='object'?snapshot.versions:{};
+  var nextSnapshotId=String(snapshot.snapshotId||snapshot.snapshot_id||'');
+  if(!nextRevision||!/^[0-9a-f]{32}$/i.test(nextSnapshotId))throw new Error('云端版本快照无效，请刷新后重试');
   if(!STATE.user||STATE.user.userId!==userId)return;
   backfillOwnerAssignee(nextData,STATE.user);
   STATE.data=nextData;
   cloudBaseline=cloneJson(nextData);
+  cloudServerBaseline=rawPayload;
   cloudRevision=nextRevision;
+  cloudVersions=cloneJson(nextVersions);
+  cloudSnapshotId=nextSnapshotId;
 }
 function saveUserData(syncContext){
   if(!db||!STATE.user) return Promise.resolve(false);
@@ -1046,30 +1649,41 @@ function saveUserData(syncContext){
   var workbookRequest=syncContext?Object.assign({requestId:gid(),ownerUserId:userId},syncContext):null;
   var snapshot=cloneJson(normalizeUserData(STATE.data));
   var baseSnapshot=cloneJson(normalizeUserData(cloudBaseline));
+  var serverBaseSnapshot=cloneJson(cloudServerBaseline||baseSnapshot);
+  var baseVersions=cloneJson(cloudVersions||{});
+  var baseSnapshotId=String(cloudSnapshotId||'');
+  var baseRevision=String(cloudRevision||'');
+  var saveOperationId='workbench-save:'+String(userId)+':'+gid();
   var requestId=++latestSaveRequest;
   pendingSaves++;
   setCloudStatus('正在保存…','var(--warning)');
   var task=saveQueue.catch(function(){}).then(async function(){
-    for(var attempt=0;attempt<5;attempt++){
-      var current=await db.from('workbench_data').select('payload,updated_at').eq('user_id',userId).maybeSingle();
-      if(current.error) throw current.error;
-      if(!current.data){
-        var inserted=await db.from('workbench_data').insert({user_id:userId,payload:snapshot}).select('payload,updated_at').maybeSingle();
-        if(!inserted.error&&inserted.data)return {payload:normalizeUserData(inserted.data.payload),updated_at:inserted.data.updated_at||''};
-        if(inserted.error&&inserted.error.code!=='23505')throw inserted.error;
-        continue;
+    if(!baseRevision||!/^[0-9a-f]{32}$/i.test(baseSnapshotId))throw new Error('本地版本基线已失效，请刷新后重试');
+    for(var attempt=0;attempt<3;attempt++){
+      var response=await db.rpc('save_workbench_data_versioned',{
+        p_request_id:saveOperationId,
+        p_snapshot_id:baseSnapshotId,
+        p_base_updated_at:baseRevision,
+        p_base_payload:serverBaseSnapshot,
+        p_base_versions:baseVersions,
+        p_local_payload:snapshot
+      });
+      if(!response.error){
+        var saved=unwrapVersionedWorkbenchResult(response.data);
+        var savedServerPayload=cloneJson(saved.payload||emptyUserData());
+        return {
+          payload:normalizeUserData(cloneJson(savedServerPayload)),
+          server_payload:savedServerPayload,
+          updated_at:String(saved.updatedAt||saved.updated_at||''),
+          versions:saved.versions&&typeof saved.versions==='object'?saved.versions:{},
+          snapshot_id:String(saved.snapshotId||saved.snapshot_id||''),
+          conflicts:Array.isArray(saved.conflicts)?saved.conflicts:[]
+        };
       }
-      var remote=backfillOwnerAssignee(normalizeUserData(current.data.payload),STATE.user);
-      var conflicts=[];
-      var merged=mergeUserData(baseSnapshot,snapshot,remote,conflicts);
-      var updated=await db.from('workbench_data').update({payload:merged})
-        .eq('user_id',userId).eq('updated_at',current.data.updated_at)
-        .select('payload,updated_at').maybeSingle();
-      if(updated.error) throw updated.error;
-      if(updated.data)return {payload:normalizeUserData(updated.data.payload),updated_at:updated.data.updated_at||'',conflicts:conflicts};
+      if(response.error.code!=='40001'&&response.error.code!=='40P01')throw response.error;
       await new Promise(function(resolve){setTimeout(resolve,60*(attempt+1))});
     }
-    throw new Error('检测到多设备同时保存，自动合并重试仍未成功');
+    throw new Error('检测到云端版本已变化，安全重试仍未完成，请刷新后再保存');
   });
   saveQueue=task.catch(function(){});
   return task.then(async function(saved){
@@ -1078,14 +1692,18 @@ function saveUserData(syncContext){
       var beforeMerge=dataSignature(STATE.data);
       STATE.data=mergeUserData(snapshot,STATE.data,saved.payload);
       cloudBaseline=cloneJson(saved.payload);
+      cloudServerBaseline=cloneJson(saved.server_payload||saved.payload);
       cloudRevision=saved.updated_at||'';
+      cloudVersions=cloneJson(saved.versions||{});
+      cloudSnapshotId=saved.snapshot_id||'';
       if(beforeMerge!==dataSignature(STATE.data)){
         renderApp();
         restoreIssueFormDraft(formDraft);
       }
     }
     if(saved.conflicts&&saved.conflicts.length){
-      setCloudStatus('业务云端已保存，并保留另一设备的新记录','var(--warning)');
+      setCloudStatus('已保存非冲突内容；冲突字段保留云端最新值','var(--warning)');
+      await loadWorkbookConflicts({force:true,silent:true});
     }else if(requestId===latestSaveRequest&&pendingSaves<=1){setCloudStatus('业务云端已保存','var(--success)')}
     var workbookSync=null;
     if(workbookRequest){
@@ -1178,6 +1796,7 @@ function clearIssueEditState(){
   STATE.editingIssueId=null;
   STATE.editingIssueOwnerUserId=null;
   STATE.editingIssueBase=null;
+  STATE.editingIssueSnapshot=null;
   STATE.issueFormTouched={};
 }
 function getEditingIssueRef(){
@@ -1214,10 +1833,12 @@ async function refreshFromCloud(options){
     if(!STATE.user)return false;
     var beforeOwn=dataSignature(STATE.data);
     var beforeTeam=dataSignature(STATE.importedData);
+    var beforeShared=dataSignature({items:STATE.sharedKnowledge,error:STATE.sharedKnowledgeError});
     var beforePermissions=permissionStateSignature();
     var editedIssueDeleted=false;
     await loadImportedData();
     await loadUserData();
+    await loadSharedKnowledge();
     // 网络读取期间用户可能仍在输入；在真正重绘前捕获最新 DOM 草稿。
     var issueDraft=captureIssueFormDraft();
     if(STATE.editingIssueId&&!getEditingIssueRef()){
@@ -1225,7 +1846,8 @@ async function refreshFromCloud(options){
       clearIssueEditState();
       STATE.pendingNewIssue=null;
     }
-    var changed=beforeOwn!==dataSignature(STATE.data)||beforeTeam!==dataSignature(STATE.importedData)||beforePermissions!==permissionStateSignature();
+    var changed=beforeOwn!==dataSignature(STATE.data)||beforeTeam!==dataSignature(STATE.importedData)||
+      beforeShared!==dataSignature({items:STATE.sharedKnowledge,error:STATE.sharedKnowledgeError})||beforePermissions!==permissionStateSignature();
     if(changed){
       renderApp();
       restoreIssueFormDraft(issueDraft);
@@ -1252,15 +1874,18 @@ async function refreshFromCloud(options){
 }
 async function manualCloudRefresh(){
   setCloudStatus('正在刷新…','var(--warning)');
+  if(workbookBidirectionalEnabled())await pullWorkbookInbound({manual:true,force:true});
   await refreshFromCloud({source:'manual'});
 }
 function stopRealtimeSync(){
   clearTimeout(realtimeRefreshTimer);
   clearInterval(syncPollTimer);
+  clearInterval(workbookInboundPollTimer);
   realtimeRefreshTimer=null;
   realtimeDeferCount=0;
   refreshQueued=false;
   syncPollTimer=null;
+  workbookInboundPollTimer=null;
   if(realtimeChannel&&db){db.removeChannel(realtimeChannel)}
   realtimeChannel=null;
 }
@@ -1277,12 +1902,29 @@ function startRealtimeSync(){
       if(status==='CHANNEL_ERROR'||status==='TIMED_OUT') setCloudStatus('云端已连接（自动刷新）','var(--warning)');
     });
   syncPollTimer=setInterval(function(){refreshFromCloud({source:'poll',silent:true})},15000);
+  if(workbookBidirectionalEnabled()){
+    var inboundPollMs=Math.max(15000,Number(CLOUD_CONFIG.workbookBidirectionalPollMs)||30000);
+    workbookInboundPollTimer=setInterval(function(){pullWorkbookInbound({manual:false})},inboundPollMs);
+  }
 }
 
 // ====== 团队云端数据 ======
+function teamDataRevision(member){
+  return String(member&&member.versionedSnapshot&&member.versionedSnapshot.updatedAt||member&&member.cloudUpdatedAt||'');
+}
+function teamRevisionIsNotOlder(incomingRevision,currentMember){
+  incomingRevision=String(incomingRevision||'');
+  var currentRevision=teamDataRevision(currentMember);
+  if(!currentRevision)return true;
+  if(!incomingRevision)return false;
+  var incomingTime=Date.parse(incomingRevision),currentTime=Date.parse(currentRevision);
+  if(isFinite(incomingTime)&&isFinite(currentTime))return incomingTime>=currentTime;
+  return incomingRevision>=currentRevision;
+}
 async function loadImportedData(){
   if(!db||!STATE.user){STATE.importedData={};TEAM_PROFILES=[];return}
   var activeUserId=STATE.user.userId;
+  var previousImported=STATE.importedData||{};
   var nextImported={},nextProfiles=[];
   var profilesResult=await db.from('profiles').select('id,username,name,department,role,can_view_all,is_active,deactivated_at,created_at').order('created_at',{ascending:true});
   if(profilesResult.error) throw profilesResult.error;
@@ -1304,21 +1946,44 @@ async function loadImportedData(){
   }
   var activeCanViewTeam=canViewTeamData(STATE.user);
   if(!activeCanViewTeam){
-    if(STATE.user&&STATE.user.userId===activeUserId){TEAM_PROFILES=nextProfiles;STATE.importedData={}}
+    if(STATE.user&&STATE.user.userId===activeUserId){TEAM_PROFILES=nextProfiles;STATE.importedData={};setTimeout(function(){refreshWorkbookMemberDropdown({force:false})},0)}
     if(permissionChanged)setTimeout(startRealtimeSync,0);
     return;
   }
-  var dataResult=await db.from('workbench_data').select('user_id,payload,updated_at');
-  if(dataResult.error) throw dataResult.error;
-  (dataResult.data||[]).forEach(function(row){
+  var teamRows=[];
+  if(isAdmin(STATE.user)){
+    var reuseSnapshotIds={};
+    Object.keys(previousImported).forEach(function(userId){
+      var meta=previousImported[userId]&&previousImported[userId].versionedSnapshot;
+      if(meta&&/^[0-9a-f]{32}$/.test(String(meta.snapshotId||'')))reuseSnapshotIds[userId]=meta.snapshotId;
+    });
+    var teamSnapshotResult=await db.rpc('get_admin_team_versioned_snapshots',{p_reuse_snapshot_ids:reuseSnapshotIds});
+    if(teamSnapshotResult.error)throw teamSnapshotResult.error;
+    teamRows=(Array.isArray(teamSnapshotResult.data)?teamSnapshotResult.data:[]).map(function(row){
+      return {user_id:row.ownerUserId,payload:row.payload,updated_at:row.updatedAt,snapshot_id:row.snapshotId,versions:row.versions||{}};
+    });
+  }else{
+    var dataResult=await db.from('workbench_data').select('user_id,payload,updated_at');
+    if(dataResult.error) throw dataResult.error;
+    teamRows=dataResult.data||[];
+  }
+  teamRows.forEach(function(row){
     if(row.user_id===activeUserId) return;
     var p=nextProfiles.find(function(item){return item.userId===row.user_id});
     if(!p) return;
     var memberData=normalizeUserData(row.payload);
     backfillOwnerAssignee(memberData,p);
-    nextImported[row.user_id]={name:p.name,department:p.department,data:memberData,importedAt:(row.updated_at||'').slice(0,10)};
+    nextImported[row.user_id]={name:p.name,department:p.department,data:memberData,importedAt:String(row.updated_at||'').slice(0,10),cloudUpdatedAt:String(row.updated_at||'')};
+    if(row.snapshot_id)nextImported[row.user_id].versionedSnapshot={snapshotId:row.snapshot_id,updatedAt:row.updated_at,versions:row.versions||{}};
   });
-  if(STATE.user&&STATE.user.userId===activeUserId){TEAM_PROFILES=nextProfiles;STATE.importedData=nextImported}
+  if(STATE.user&&STATE.user.userId===activeUserId){
+    // 请求发出后可能已有保存/实时刷新回包；逐 owner 做版本门禁，旧响应不得覆盖新 payload 或新快照。
+    var liveImported=STATE.importedData||{};
+    Object.keys(nextImported).forEach(function(userId){
+      if(!teamRevisionIsNotOlder(teamDataRevision(nextImported[userId]),liveImported[userId]))nextImported[userId]=liveImported[userId];
+    });
+    TEAM_PROFILES=nextProfiles;STATE.importedData=nextImported;setTimeout(function(){refreshWorkbookMemberDropdown({force:false})},0)
+  }
   if(permissionChanged)setTimeout(startRealtimeSync,0);
 }
 function saveImportedData(){return}
@@ -1382,6 +2047,46 @@ function getTeamKnowledgeEntries(){
   }
   return result;
 }
+function normalizeSharedKnowledgeRows(rows){
+  return (Array.isArray(rows)?rows:[]).filter(function(row){return row&&typeof row==='object'}).map(function(row){
+    return {
+      id:String(row.knowledge_id||row.knowledgeId||row.id||''),
+      domain:String(row.knowledge_domain||row.knowledgeDomain||row.domain||''),
+      code:String(row.knowledge_code||row.knowledgeCode||row.code||''),
+      title:String(row.knowledge_title||row.knowledgeTitle||row.title||''),
+      content:String(row.knowledge_content||row.knowledgeContent||row.content||''),
+      _ownerUserId:String(row.author_user_id||row.authorUserId||''),
+      _fromMember:String(row.author_name||row.authorName||'未知成员'),
+      _fromDept:String(row.author_department||row.authorDepartment||''),
+      _authorIsActive:(row.author_is_active===undefined?row.authorIsActive:row.author_is_active)!==false,
+      _sharedReadOnly:true
+    };
+  });
+}
+async function loadSharedKnowledge(){
+  if(!db||!STATE.user){STATE.sharedKnowledge=[];STATE.sharedKnowledgeError='';return false}
+  var activeUserId=String(STATE.user.userId||'');
+  var result;
+  try{result=await db.rpc('list_shared_workbench_knowledge',{})}
+  catch(error){result={data:null,error:error}}
+  result=result||{data:[],error:null};
+  if(!STATE.user||String(STATE.user.userId||'')!==activeUserId)return false;
+  if(result.error){
+    console.error('[商云宝] 共享知识加载失败',result.error);
+    // 短时网络错误时保留上一份只读快照，后续 15 秒轮询会自动重试。
+    STATE.sharedKnowledgeError='共享知识暂时无法刷新，当前显示上次成功获取的内容';
+    return false;
+  }
+  STATE.sharedKnowledge=normalizeSharedKnowledgeRows(result.data);
+  STATE.sharedKnowledgeError='';
+  return true;
+}
+function getSharedKnowledgeEntries(){
+  var currentUserId=String(STATE.user&&STATE.user.userId||'');
+  return (Array.isArray(STATE.sharedKnowledge)?STATE.sharedKnowledge:[]).filter(function(item){
+    return String(item&&item._ownerUserId||'')!==currentUserId;
+  });
+}
 function getTeamDailyEntries(date){
   var result=[];
   for(var uid in STATE.importedData){
@@ -1396,13 +2101,102 @@ function getTeamDailyEntries(date){
 }
 
 // ====== 驾驶舱数据 ======
+function dashboardProfileId(profile){
+  return String(profile&&(profile.userId||profile.id)||'');
+}
+function dashboardScopeProfiles(){
+  var byId={};
+  function addProfile(profile){
+    var userId=dashboardProfileId(profile);
+    if(!userId)return;
+    var current=byId[userId]||{};
+    byId[userId]={
+      userId:userId,
+      name:String(profile.name||current.name||profile.username||current.username||'未知成员'),
+      username:String(profile.username||current.username||''),
+      department:String(profile.department||current.department||''),
+      isActive:profile.isActive===undefined?(current.isActive!==false):profile.isActive!==false
+    };
+  }
+  addProfile(STATE.user);
+  (Array.isArray(TEAM_PROFILES)?TEAM_PROFILES:[]).forEach(addProfile);
+  Object.keys(STATE.importedData||{}).forEach(function(userId){
+    var imported=STATE.importedData[userId]||{};
+    addProfile({userId:userId,name:imported.name,department:imported.department,isActive:imported.isActive});
+  });
+  return Object.keys(byId).map(function(userId){return byId[userId]}).sort(function(a,b){
+    if(a.isActive!==b.isActive)return a.isActive?-1:1;
+    return a.name.localeCompare(b.name,'zh-CN')||a.userId.localeCompare(b.userId);
+  });
+}
+function dashboardPersonProfile(userId){
+  userId=String(userId||'');
+  if(!userId)return null;
+  return dashboardScopeProfiles().find(function(profile){return profile.userId===userId})||null;
+}
+function ensureDashboardScope(){
+  if(!canViewTeamData(STATE.user)){
+    STATE.dashScope='mine';STATE.dashOwnerUserId='';return;
+  }
+  if(STATE.dashScope==='team'||STATE.dashScope==='mine'){
+    STATE.dashOwnerUserId='';return;
+  }
+  if(STATE.dashScope==='person'&&dashboardPersonProfile(STATE.dashOwnerUserId))return;
+  // 未知或已失效的账号 ID 不得回退到全团队，避免误展示越权数据。
+  STATE.dashScope='mine';STATE.dashOwnerUserId='';
+}
+function setDashboardScope(value){
+  value=String(value||'');
+  if(!canViewTeamData(STATE.user)){
+    STATE.dashScope='mine';STATE.dashOwnerUserId='';renderApp();return;
+  }
+  if(value==='team'||value==='mine'){
+    STATE.dashScope=value;STATE.dashOwnerUserId='';renderApp();return;
+  }
+  var prefix='person:';
+  var userId=value.indexOf(prefix)===0?value.slice(prefix.length):'';
+  if(userId&&dashboardPersonProfile(userId)){
+    STATE.dashScope='person';STATE.dashOwnerUserId=userId;
+  }else{
+    // 参数被篡改或人员列表已变化时，只回到本人数据，绝不扩大到团队范围。
+    STATE.dashScope='mine';STATE.dashOwnerUserId='';
+  }
+  renderApp();
+}
+function dashboardScopeValue(){
+  ensureDashboardScope();
+  return STATE.dashScope==='person'?'person:'+STATE.dashOwnerUserId:STATE.dashScope;
+}
+function dashboardScopeOptionsHtml(){
+  var selected=dashboardScopeValue();
+  var html='<option value="team"'+(selected==='team'?' selected':'')+'>全团队</option>';
+  html+='<option value="mine"'+(selected==='mine'?' selected':'')+'>仅看我（'+esc(STATE.user&&STATE.user.name||'本人')+'）</option>';
+  var currentUserId=String(STATE.user&&STATE.user.userId||'');
+  dashboardScopeProfiles().forEach(function(profile){
+    if(profile.userId===currentUserId)return;
+    var value='person:'+profile.userId;
+    var label=profile.name+(profile.department?' · '+profile.department:'')+(profile.isActive===false?'（已移除·历史）':'');
+    html+='<option value="'+escAttr(value)+'"'+(selected===value?' selected':'')+'>'+esc(label)+'</option>';
+  });
+  return html;
+}
 function getScopedIssues(){
-  var useTeam = canViewTeamData(STATE.user)&&STATE.dashScope==='team';
-  return useTeam ? getMergedIssues() : STATE.data.issues.slice();
+  if(!canViewTeamData(STATE.user))return STATE.data.issues.slice();
+  if(STATE.dashScope==='team')return getMergedIssues();
+  if(STATE.dashScope==='person'){
+    var userId=dashboardPersonProfile(STATE.dashOwnerUserId)?String(STATE.dashOwnerUserId):'';
+    if(userId)return getMergedIssues().filter(function(issue){return dashboardOwnerId(issue)===userId});
+  }
+  return STATE.data.issues.slice();
 }
 function getScopedArchives(){
-  var useTeam = canViewTeamData(STATE.user)&&STATE.dashScope==='team';
-  return useTeam ? getMergedArchives() : STATE.data.archives.slice();
+  if(!canViewTeamData(STATE.user))return STATE.data.archives.slice();
+  if(STATE.dashScope==='team')return getMergedArchives();
+  if(STATE.dashScope==='person'){
+    var userId=dashboardPersonProfile(STATE.dashOwnerUserId)?String(STATE.dashOwnerUserId):'';
+    if(userId)return getMergedArchives().filter(function(archive){return dashboardOwnerId(archive)===userId});
+  }
+  return STATE.data.archives.slice();
 }
 function isIssueCompleted(issue){
   return !!issue&&deriveCurrentStatus(issue)==='已完结';
@@ -1739,11 +2533,17 @@ function isAccountDeactivatedError(error){
 async function handleDeactivatedSession(){
   stopVoiceRecognition(true);
   stopRealtimeSync();
+  resetWorkbookConflictState();
   if(db)await db.auth.signOut();
   STATE.user=null;
   STATE.data=emptyUserData();
   STATE.importedData={};
+  STATE.sharedKnowledge=[];
+  STATE.sharedKnowledgeError='';
   TEAM_PROFILES=[];
+  STATE.dashScope='mine';
+  STATE.dashOwnerUserId='';
+  STATE.issueQuery='';
   clearIssueEditState();
   STATE.issueDetail=null;
   STATE.pendingNewIssue=null;
@@ -1756,15 +2556,26 @@ async function startUserSession(authUser){
   if(profileResult.data.is_active===false){
     var inactiveError=new Error('ACCOUNT_DEACTIVATED');inactiveError.code='ACCOUNT_DEACTIVATED';throw inactiveError;
   }
+  resetWorkbookConflictState();
   STATE.user=profileToUser(profileResult.data);
+  STATE.dashScope=canViewTeamData(STATE.user)?'team':'mine';
+  STATE.dashOwnerUserId='';
+  STATE.issueQuery='';
+  STATE.sharedKnowledge=[];
+  STATE.sharedKnowledgeError='';
   STATE.adminFullWorkbookSync={status:'idle',message:'',requestId:''};
   clearIssueEditState();
   STATE.pendingNewIssue=null;
   pendingHistoryOps={};
   await loadUserData();
   await loadImportedData();
+  await loadSharedKnowledge();
+  await loadWorkbookConflicts({force:true,silent:true});
   renderApp();
   startRealtimeSync();
+  // 双向模式必须先读取并合并WPS人工修改，再处理客户管家台待写队列，
+  // 防止登录补同步抢先覆盖刚在表格中填写的内容。
+  if(workbookBidirectionalEnabled())await pullWorkbookInbound({manual:false,force:true});
   // 每次页面会话只触发一次服务端待同步补偿。后端支持 outbox/drain 时会清队列；
   // 当前后端也可把它作为本用户全量一致性校验，避免用户保存后立即关页造成遗漏。
   await triggerWorkbookSyncCompensation();
@@ -1827,13 +2638,19 @@ async function doLogout(){
   STATE.user = null;
   STATE.data = {issues:[],knowledge:[],archives:[],dailySupps:{}};
   STATE.importedData = {};
+  STATE.sharedKnowledge=[];
+  STATE.sharedKnowledgeError='';
   clearIssueEditState();
   STATE.issueDetail=null;
   STATE.pendingNewIssue=null;
   STATE.adminFullWorkbookSync={status:'idle',message:'',requestId:''};
   STATE.knowledgeQuery='';
+  STATE.issueQuery='';
+  STATE.dashScope='mine';
+  STATE.dashOwnerUserId='';
   pendingHistoryOps={};
   workbookCompensationUserId='';
+  resetWorkbookConflictState();
   if(workbookDeletionRetryTimer){clearTimeout(workbookDeletionRetryTimer);workbookDeletionRetryTimer=null}
   STATE.voiceText='';
   STATE.voiceParsed={shop:'',desc:'',pri:'普通',deadline:''};
@@ -1971,22 +2788,39 @@ function teamIssueMutationErrorCode(error){
   if(text.indexOf('forbidden')>=0||text.indexOf('管理员')>=0)return 'forbidden';
   return error&&error.code||'save_failed';
 }
+function teamMutationConflicts(result){
+  var raw=result&&result.metadata?result.metadata.conflict:null;
+  if(Array.isArray(raw))return raw;
+  return raw&&typeof raw==='object'?[raw]:[];
+}
+function teamMutationHasConflict(result,type){
+  return teamMutationConflicts(result).some(function(item){
+    return item&&item.type===type&&item.collection==='issues';
+  });
+}
 async function saveTeamIssueMutation(ownerUserId,issueId,mutation){
   if(!db||!STATE.user||!isAdmin(STATE.user)||!ownerUserId||ownerUserId===STATE.user.userId){
     return {ok:false,code:'forbidden'};
   }
   mutation=mutation||{};
+  var memberState=STATE.importedData&&STATE.importedData[ownerUserId];
+  var teamSnapshot=mutation.versionedSnapshot||(memberState&&memberState.versionedSnapshot);
+  if(!teamSnapshot||!/^[0-9a-f]{32}$/.test(String(teamSnapshot.snapshotId||''))){
+    return {ok:false,code:'team_snapshot_required'};
+  }
   var activeAdminId=STATE.user.userId;
+  var saveOperationId=String(mutation.syncRequestId||gid());
   pendingSaves++;
   setCloudStatus('正在保存团队工单…','var(--warning)');
   var task=saveQueue.catch(function(){}).then(async function(){
     for(var attempt=0;attempt<3;attempt++){
-      var response=await db.rpc('admin_mutate_team_issue',{
+      var response=await db.rpc('admin_mutate_team_issue_versioned',{
+        p_request_id:saveOperationId,
         p_owner_user_id:ownerUserId,
         p_issue_id:String(issueId),
+        p_snapshot_id:teamSnapshot.snapshotId,
         p_patch:mutation.patch||{},
-        p_history:mutation.history||null,
-        p_expected_issue_updated_at:mutation.expectedIssueUpdatedAt||null
+        p_history:mutation.history||null
       });
       if(!response.error)return {result:unwrapTeamIssueMutationResult(response.data),retries:attempt};
       if(response.error.code!=='40001'&&response.error.code!=='40P01')throw response.error;
@@ -1997,7 +2831,9 @@ async function saveTeamIssueMutation(ownerUserId,issueId,mutation){
   saveQueue=task.catch(function(){});
   return task.then(async function(saved){
     var rpcResult=saved.result||{};
-    if(STATE.user&&STATE.user.userId===activeAdminId&&isAdmin(STATE.user)&&STATE.importedData[ownerUserId]){
+    var incomingTeamRevision=String(rpcResult.updatedAt||rpcResult.updated_at||'');
+    var responseApplied=false;
+    if(STATE.user&&STATE.user.userId===activeAdminId&&isAdmin(STATE.user)&&STATE.importedData[ownerUserId]&&teamRevisionIsNotOlder(incomingTeamRevision,STATE.importedData[ownerUserId])){
       if(rpcResult.payload){
         STATE.importedData[ownerUserId].data=backfillOwnerAssignee(normalizeUserData(rpcResult.payload),{userId:ownerUserId,name:STATE.importedData[ownerUserId].name});
       }else if(rpcResult.issue){
@@ -2007,6 +2843,13 @@ async function saveTeamIssueMutation(ownerUserId,issueId,mutation){
         STATE.importedData[ownerUserId].data=nextData;
       }
       STATE.importedData[ownerUserId].importedAt=String(rpcResult.updated_at||'').slice(0,10);
+      STATE.importedData[ownerUserId].cloudUpdatedAt=incomingTeamRevision;
+      if(rpcResult.snapshotId)STATE.importedData[ownerUserId].versionedSnapshot={snapshotId:rpcResult.snapshotId,updatedAt:rpcResult.updatedAt||rpcResult.updated_at||'',versions:rpcResult.versions||{}};
+      responseApplied=true;
+    }
+    if(!responseApplied&&STATE.importedData&&STATE.importedData[ownerUserId]){
+      var visibleIssue=(STATE.importedData[ownerUserId].data.issues||[]).find(function(item){return String(item.id)===String(issueId)});
+      if(visibleIssue)rpcResult.issue=visibleIssue;
     }
     setCloudStatus('业务云端已保存，正在同步Excel表…','var(--warning)');
     var workbookSync=await requestWorkbookSync(mutation.syncReason||'team_issue_mutated',{requestId:mutation.syncRequestId||gid(),ownerUserId:ownerUserId,issueId:String(issueId),revision:rpcResult.updated_at||''});
@@ -2014,7 +2857,7 @@ async function saveTeamIssueMutation(ownerUserId,issueId,mutation){
     else if(workbookSync.skipped&&!workbookSync.pending)setCloudStatus('业务云端已保存，Excel表联动暂未启用','var(--warning)');
     else setCloudStatus('业务云端已保存，Excel表待补同步','var(--warning)');
     pendingSaves=Math.max(0,pendingSaves-1);
-    return {ok:true,businessSaved:true,workbookSync:workbookSync,workbookSynced:!!workbookSync.workbookSynced,metadata:{fieldConflict:!!rpcResult.conflict,conflict:rpcResult.conflict||null,issue:rpcResult.issue||null},retries:saved.retries||0};
+    return {ok:true,businessSaved:true,workbookSync:workbookSync,workbookSynced:!!workbookSync.workbookSynced,metadata:{fieldConflict:!!rpcResult.conflict,conflict:rpcResult.conflicts||rpcResult.conflict||null,issue:rpcResult.issue||null},retries:saved.retries||0};
   }).catch(function(error){
     pendingSaves=Math.max(0,pendingSaves-1);
     console.error('[商云宝] 管理员保存团队工单失败',error);
@@ -2170,6 +3013,12 @@ async function addIssueFollowUp(){
       renderIssueDetailModal();
       return;
     }
+    if(teamMutationHasConflict(teamSaved,'update_after_remote_delete')){
+      // 数据库明确拒绝了这次跟进；保留正文和幂等请求ID，方便用户复制或排查，不能显示成保存成功。
+      if(saveBtn){saveBtn.disabled=false;saveBtn.textContent='工单已删除，请先复制本次跟进'}
+      T('该工单已在另一入口删除，本次跟进未写入；您填写的内容仍保留在当前窗口');
+      return;
+    }
     detail.draftContent='';
     detail.draftProgress=teamSaved.metadata.issue&&teamSaved.metadata.issue.progress?teamSaved.metadata.issue.progress:requestedProgress;
     detail.draftProgressTouched=false;
@@ -2202,7 +3051,7 @@ async function addIssueFollowUp(){
   detail.draftContent='';detail.draftProgress=nextProgress;detail.draftProgressTouched=false;detail.saving=false;
   detail.pendingHistoryId='';detail.pendingHistoryCreatedAt='';
   renderApp();
-  T(businessWorkbookMessage(followUpDeleteConflict?'跟进已保存；另一设备曾删除此工单，因有新跟进已自动保留工单':(followUpFieldConflict?'跟进已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'跟进记录已保存'),ok));
+  T(businessWorkbookMessage(followUpDeleteConflict?'跟进未覆盖已删除工单；请核对云端最新状态':(followUpFieldConflict?'非冲突内容已保存；冲突跟进保留云端最新值，请核对':'跟进记录已保存'),ok));
 }
 function editIssueFromDetail(){
   var detail=STATE.issueDetail;if(!detail)return;
@@ -2236,6 +3085,7 @@ function switchTab(tab){
 // ====== 主渲染 ======
 function renderApp(){
   if(!STATE.user){showLogin();return}
+  ensureDashboardScope();
   var isAdminUser=isAdmin(STATE.user);
   var hasTeamAccess=canViewTeamData(STATE.user);
   var currentTier=permissionTier(STATE.user);
@@ -2285,6 +3135,10 @@ function renderApp(){
   h+='<button class="btn btn-sm" onclick="exportData()">'+I.download+' 导出备份</button>';
   h+='<a class="btn btn-sm" href="V1.0_商云宝客户管家台_WPS导入恢复字段模版.xlsx" download="V1.0_商云宝客户管家台_WPS导入恢复字段模版.xlsx" aria-label="下载 WPS 导入恢复字段模版" title="下载 WPS 导入恢复字段模版" style="text-decoration:none">'+I.download+' 下载导入模板</a>';
   h+='<button class="btn btn-sm" onclick="manualCloudRefresh()">'+I.refresh+' 刷新云端</button>';
+  if(workbookBidirectionalEnabled()){
+    h+='<button class="btn btn-sm" onclick="manualWorkbookBidirectionalSync()">'+I.refresh+' 双向核对</button>';
+  }
+  h+='<button id="workbook-conflict-button" class="btn btn-sm'+(workbookVisibleConflictCount()>0?' btn-outline-danger':'')+'" onclick="openWorkbookConflictCenter()" aria-label="打开数据冲突中心，当前'+workbookVisibleConflictCount()+'项">'+I.alert+' 冲突中心(<span id="workbook-conflict-count">'+workbookVisibleConflictCount()+'</span>)</button>';
   h+='<button class="btn btn-sm" onclick="document.getElementById(\'import-file\').click()">'+I.upload+' 导入恢复</button>';
   h+='<button class="btn btn-sm btn-outline-danger" onclick="confirmClear()">'+I.trash+' '+(hasTeamAccess?'清空我的数据':'清空数据')+'</button>';
   if(STATE.data.issues.some(function(i){return i._sample})||STATE.data.knowledge.some(function(k){return k._sample})){
@@ -2298,6 +3152,9 @@ function renderApp(){
   var realKnow = STATE.data.knowledge.filter(function(k){return !k._sample}).length;
   h+='<div id="data-status" style="text-align:center;font-size:11px;color:var(--text3);padding:4px 0 10px;border-top:1px solid var(--border2);margin:0 16px">';
   h+=(hasTeamAccess?'我的云端存储：':'云端存储：')+'<span id="cloud-state" style="color:'+cloudState.color+';font-weight:600">'+esc(cloudState.text)+'</span> · <span style="color:var(--success);font-weight:600">'+realIssues+'</span> 条问题 · <span style="color:var(--success);font-weight:600">'+realKnow+'</span> 条知识 · <span style="color:var(--success);font-weight:600">'+STATE.data.archives.length+'</span> 条归档';
+  if(workbookBidirectionalEnabled()||workbookVisibleConflictCount()>0){
+    h+=' · <span id="workbook-bidirectional-state" style="color:'+(workbookVisibleConflictCount()>0?'var(--danger)':'var(--primary)')+';font-weight:600">'+esc(workbookInboundStatusText())+'</span>';
+  }
   h+='</div>';
 
   document.getElementById('app').innerHTML = h;
@@ -2366,12 +3223,11 @@ function renderDashboard(){
   var pie=dashPieData(),bar=dashBarData(),ownerBars=dashAssigneeData(),trend=dashTrendData(7);
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.dashboard+'</span> 驾驶舱概览</div>';
 
-  // 拥有全数据查看权限的账号可明确选择统计本人或全团队。
+  // 拥有全数据查看权限的账号可按团队、本人或指定人员查看同一套统计口径。
   if(canViewTeamData(STATE.user)){
     h+='<div class="date-filter" style="margin-bottom:8px">';
-    h+='<span style="font-size:12px;color:var(--text3);margin-right:4px">统计范围</span>';
-    h+='<button class="btn btn-xs'+(STATE.dashScope==='team'?' btn-primary':'')+'" onclick="STATE.dashScope=\'team\';renderApp()">全团队</button>';
-    h+='<button class="btn btn-xs'+(STATE.dashScope==='mine'?' btn-primary':'')+'" onclick="STATE.dashScope=\'mine\';renderApp()">仅看我</button>';
+    h+='<label for="dash-scope-select" style="font-size:12px;color:var(--text3);margin-right:4px">统计范围</label>';
+    h+='<select id="dash-scope-select" aria-label="驾驶舱统计范围" style="width:auto;min-width:210px;padding:6px 30px 6px 9px;font-size:12px" onchange="setDashboardScope(this.value)">'+dashboardScopeOptionsHtml()+'</select>';
     h+='</div>';
   }
 
@@ -2425,6 +3281,9 @@ function renderDashboard(){
     h+='<div style="font-size:12px;color:var(--text2);margin-top:8px;padding:8px 10px;background:var(--primary-lighter);border-radius:6px">';
     if(STATE.dashScope==='team'){
       h+='当前为全团队统计，共 '+s.total+' 条工单；已按工单编号和归档关联关系去重。';
+    }else if(STATE.dashScope==='person'){
+      var scopePerson=dashboardPersonProfile(STATE.dashOwnerUserId);
+      h+='当前仅统计 '+esc(scopePerson?scopePerson.name:'未知成员')+' 的 '+s.total+' 条工单，不包含其他成员数据。';
     }else{
       h+='当前仅统计我的 '+s.total+' 条工单，不包含其他成员数据。';
     }
@@ -2436,6 +3295,121 @@ function renderDashboard(){
 }
 
 // ====== 工单登记与跟进 ======
+function issueSearchTokens(query){
+  return String(query||'').trim().toLowerCase().split(/\s+/).filter(function(token){return !!token});
+}
+function issueSearchText(issue){
+  issue=issue||{};
+  var values=[
+    issue.id,issue.ticketNo,issue.shopName,issue.shopDesc,
+    issue.assigneeId,issue.assigneeName,issue.urgency,issue.priority,
+    issue.progress,issue.followStatus,issue.currentStatus,issue.latestFollowUpStatus,
+    deriveCurrentStatus(issue),issue.deadline,issue.createdAt,issue.completedAt,
+    issue.latestFollowUpAt,issue.latestFollowUpContent,
+    issue._ownerUserId,issue._fromMember,issue._fromDept
+  ];
+  (Array.isArray(issue.followUps)?issue.followUps:[]).forEach(function(item){
+    if(!item||typeof item!=='object')return;
+    values.push(item.id,item.followUpId,item.content,item.status,item.fromProgress,item.toProgress,
+      item.followerId,item.followerName,item.authorId,item.authorName,item.followedAt,item.createdAt);
+  });
+  return values.map(function(value){return String(value===undefined||value===null?'':value)}).join(' ').toLowerCase();
+}
+function issueMatchesSearch(issue,query){
+  var tokens=issueSearchTokens(query);
+  if(!tokens.length)return true;
+  var text=issueSearchText(issue);
+  return tokens.every(function(token){return text.indexOf(token)>=0});
+}
+function updateIssueSearch(value){
+  STATE.issueQuery=String(value||'');
+  var results=document.getElementById('issue-list-results');
+  // 只重绘列表，保留新建/编辑表单和语音文字中尚未保存的内容。
+  if(results)results.innerHTML=renderIssueLists();
+}
+function renderIssueLists(){
+  var h='';
+  var query=STATE.issueQuery||'';
+  var hasQuery=issueSearchTokens(query).length>0;
+  var allIssues=STATE.data.issues.slice();
+  var issues=allIssues.filter(function(issue){return issueMatchesSearch(issue,query)});
+  issues.sort(function(a,b){
+    var po={'紧急':0,'高':1,'普通':2,'低':3};
+    var pa=po[a.urgency]===undefined?2:po[a.urgency],pb=po[b.urgency]===undefined?2:po[b.urgency];
+    if(pa!==pb)return pa-pb;
+    return (a.deadline||'').localeCompare(b.deadline||'');
+  });
+  h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的工单（'+(hasQuery?issues.length+' / ':'')+allIssues.length+'）</div>';
+
+  if(issues.length===0){
+    h+='<div class="empty">'+(hasQuery&&allIssues.length?'我的工单中未找到同时包含全部关键词的记录。':'当前没有我的工单。拥有全数据查看权限时，驾驶舱中的其他工单可能来自团队成员。')+'</div>';
+  }else{
+    for(var i=0;i<issues.length;i++){
+      var iss=issues[i];
+      normalizeIssueContract(iss);
+      var issuePri=safePriority(iss.priority);
+      var issueStatus=iss.currentStatus||deriveCurrentStatus(iss);
+      var isOverdue=issueStatus==='已逾期';
+      var progCls='badge-progress';
+      if(issueStatus==='已完结')progCls='badge-completed';
+      else if(issueStatus==='未跟进')progCls='badge-p2';
+      h+='<div class="issue-card'+(isOverdue?' overdue':'')+'">';
+      h+='<div class="ic-top">';
+      h+='<span class="ic-store">'+esc(iss.shopName||'未知门店')+'</span>';
+      h+='<div style="display:flex;gap:4px;flex-shrink:0">';
+      h+='<span class="badge badge-'+issuePri.toLowerCase()+'">'+esc(iss.urgency)+'</span>';
+      h+='<span class="badge '+progCls+'">'+esc(issueStatus)+'</span>';
+      h+='</div></div>';
+      h+='<div class="ic-desc">'+esc(iss.shopDesc||'')+'</div>';
+      h+='<div class="ic-meta">';
+      h+='<span>编号：'+esc(iss.ticketNo||'待生成')+'</span>';
+      h+='<span>跟进人：'+esc(assigneeDisplayName(iss.assigneeName))+'</span>';
+      h+='<span>计划完成：'+esc(iss.deadline||'未设置')+'</span>';
+      h+='<span>登记：'+esc(dateOnly(iss.createdAt)||'未记录')+'</span>';
+      h+='<span>历史跟进：'+getIssueFollowUps(iss).length+' 条</span>';
+      if(iss._sample)h+='<span style="color:var(--warn)">示例</span>';
+      if(isOverdue)h+='<span style="color:var(--danger);font-weight:600">已逾期!</span>';
+      h+='</div>';
+      h+='<div class="ic-actions">';
+      h+='<button class="btn btn-xs btn-primary" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(STATE.user.userId)+'\'),decodeURIComponent(\''+inlineArg(iss.id)+'\'))">详情 / 跟进</button>';
+      h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(iss.id)+'\'))">'+I.edit+' 编辑</button>';
+      h+='<button class="btn btn-xs btn-outline-danger" onclick="deleteIssue(decodeURIComponent(\''+inlineArg(iss.id)+'\'))">'+I.trash+'</button>';
+      h+='</div></div>';
+    }
+  }
+
+  // 全数据查看者只读；管理员可修改团队工单，但不提供跨账号删除。
+  if(canViewTeamData(STATE.user)){
+    var allTeamIssues=getMergedIssues().filter(function(item){return !!item._fromMember});
+    var teamIssues=allTeamIssues.filter(function(issue){return issueMatchesSearch(issue,query)});
+    teamIssues.sort(function(a,b){return (a.deadline||'').localeCompare(b.deadline||'')});
+    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员工单（'+(hasQuery?teamIssues.length+' / ':'')+allTeamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">'+(isAdmin(STATE.user)?'管理员可修改，删除仍需成员本人操作':'全数据查看权限仅支持只读')+'</span></div>';
+    if(teamIssues.length===0){
+      h+='<div class="empty">'+(hasQuery&&allTeamIssues.length?'团队成员工单中未找到同时包含全部关键词的记录。':'当前没有团队成员工单')+'</div>';
+    }else{
+      for(var ti=0;ti<teamIssues.length;ti++){
+        var teamIssue=teamIssues[ti];
+        normalizeIssueContract(teamIssue);
+        var teamPri=safePriority(teamIssue.priority);
+        var teamOwnerUserId=teamIssue._ownerUserId||'';
+        var teamStatus=teamIssue.currentStatus||deriveCurrentStatus(teamIssue);
+        var teamProgCls=teamStatus==='已完结'?'badge-completed':(teamStatus==='未跟进'?'badge-p2':'badge-progress');
+        h+='<div class="issue-card" style="border-left:3px solid var(--primary)">';
+        h+='<div class="ic-top"><span class="ic-store">'+esc(teamIssue.shopName||'未知门店')+'</span><div style="display:flex;gap:4px;flex-shrink:0">';
+        h+='<span class="badge badge-'+teamPri.toLowerCase()+'">'+esc(teamIssue.urgency)+'</span>';
+        h+='<span class="badge '+teamProgCls+'">'+esc(teamStatus)+'</span></div></div>';
+        h+='<div class="ic-desc">'+esc(teamIssue.shopDesc||'')+'</div>';
+        h+='<div class="ic-meta"><span>编号：'+esc(teamIssue.ticketNo||'待生成')+'</span><span>跟进人：'+esc(assigneeDisplayName(teamIssue.assigneeName))+'</span><span>数据所属：'+esc(teamIssue._fromMember||'')+'</span><span>计划完成：'+esc(teamIssue.deadline||'未设置')+'</span><span>历史跟进：'+getIssueFollowUps(teamIssue).length+' 条</span></div>';
+        h+='<div class="ic-actions">';
+        h+='<button class="btn btn-xs" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'),decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'))">查看详情</button>';
+        if(isAdmin(STATE.user))h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'),decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'))">'+I.edit+' 编辑</button>';
+        h+='</div>';
+        h+='</div>';
+      }
+    }
+  }
+  return h;
+}
 function renderIssues(){
   var h='<div class="card-ttl"><span style="display:inline-block;width:16px;height:16px;vertical-align:middle;margin-right:4px">'+I.alert+'</span> 工单登记与跟进</div>';
 
@@ -2474,7 +3448,7 @@ function renderIssues(){
   var formShop = STATE.editingIssueId ? editingIssue.shopName : vp.shop;
   var formDesc = STATE.editingIssueId ? editingIssue.shopDesc : vp.desc;
   var formUrgency = STATE.editingIssueId ? normalizeUrgency(editingIssue.urgency,editingIssue.priority) : normalizeUrgency(vp.pri||'普通');
-  var defaultAssignee=STATE.user&&EXCEL_ASSIGNEE_NAMES.indexOf(normalizeAssigneeName(STATE.user.name))>=0?normalizeAssigneeName(STATE.user.name):'';
+  var defaultAssignee=STATE.user&&isValidExcelAssignee(STATE.user.name)?normalizeAssigneeName(STATE.user.name):'';
   var formAssignee = STATE.editingIssueId ? normalizeAssigneeName(editingIssue.assigneeName) : defaultAssignee;
   var formDl   = STATE.editingIssueId ? editingIssue.deadline : (vp.deadline||tsOffset(7));
   var formTicketNo=STATE.editingIssueId?(editingIssue.ticketNo||'待生成'):(formShop?'保存后由系统生成':'');
@@ -2493,89 +3467,16 @@ function renderIssues(){
     '<option value="高"'+((formUrgency==='高')?' selected':'')+'>高</option>'+
     '<option value="普通"'+((formUrgency==='普通')?' selected':'')+'>普通</option>'+
     '<option value="低"'+((formUrgency==='低')?' selected':'')+'>低</option></select></div>';
-  h+='<div class="form-group"><label>跟进人</label><select id="iss-assignee" onchange="markIssueFieldTouched(\'assignee\')">'+assigneeOptionsHtml(formAssignee)+'</select></div>';
+  var formOwnerUserId=editingRef?editingRef.ownerUserId:(STATE.user&&STATE.user.userId||'');
+  h+='<div class="form-group"><label>跟进人</label><select id="iss-assignee" onchange="markIssueFieldTouched(\'assignee\')">'+issueAssigneeOptionsHtml(formAssignee,formOwnerUserId)+'</select></div>';
   h+='<div class="form-group"><label>计划完成时间</label><input type="date" id="iss-deadline" value="'+escAttr(formDl)+'" onchange="markIssueFieldTouched(\'deadline\')"></div>';
   h+='</div>';
   h+='<button class="btn btn-primary btn-sm" onclick="'+(STATE.editingIssueId?'updateIssue()':'addIssue()')+'">'+
     (STATE.editingIssueId?'保存修改':'登记工单')+'</button>';
   h+='</div>';
 
-  // List
-  var issues = STATE.data.issues.slice();
-  issues.sort(function(a,b){
-    var po={'紧急':0,'高':1,'普通':2,'低':3};
-    var pa=po[a.urgency]===undefined?2:po[a.urgency],pb=po[b.urgency]===undefined?2:po[b.urgency];
-    if(pa!==pb) return pa-pb;
-    return (a.deadline||'').localeCompare(b.deadline||'');
-  });
-  h+='<div style="font-weight:700;font-size:14px;margin:14px 0 8px">我的工单（'+issues.length+'）</div>';
-
-  if(issues.length===0){
-    h+='<div class="empty">当前没有我的工单。拥有全数据查看权限时，驾驶舱中的其他工单可能来自团队成员。</div>';
-  } else {
-    for(var i=0;i<issues.length;i++){
-      var iss=issues[i];
-      normalizeIssueContract(iss);
-      var issuePri=safePriority(iss.priority);
-      var issueStatus=iss.currentStatus||deriveCurrentStatus(iss);
-      var isOverdue=issueStatus==='已逾期';
-      var progCls='badge-progress';
-      if(issueStatus==='已完结') progCls='badge-completed';
-      else if(issueStatus==='未跟进') progCls='badge-p2';
-      h+='<div class="issue-card'+(isOverdue?' overdue':'')+'">';
-      h+='<div class="ic-top">';
-      h+='<span class="ic-store">'+esc(iss.shopName||'未知门店')+'</span>';
-      h+='<div style="display:flex;gap:4px;flex-shrink:0">';
-      h+='<span class="badge badge-'+issuePri.toLowerCase()+'">'+esc(iss.urgency)+'</span>';
-      h+='<span class="badge '+progCls+'">'+esc(issueStatus)+'</span>';
-      h+='</div></div>';
-      h+='<div class="ic-desc">'+esc(iss.shopDesc||'')+'</div>';
-      h+='<div class="ic-meta">';
-      h+='<span>编号：'+esc(iss.ticketNo||'待生成')+'</span>';
-      h+='<span>跟进人：'+esc(assigneeDisplayName(iss.assigneeName))+'</span>';
-      h+='<span>计划完成：'+esc(iss.deadline||'未设置')+'</span>';
-      h+='<span>登记：'+esc(dateOnly(iss.createdAt)||'未记录')+'</span>';
-      h+='<span>历史跟进：'+getIssueFollowUps(iss).length+' 条</span>';
-      if(iss._sample) h+='<span style="color:var(--warn)">示例</span>';
-      if(isOverdue) h+='<span style="color:var(--danger);font-weight:600">已逾期!</span>';
-      h+='</div>';
-      h+='<div class="ic-actions">';
-      h+='<button class="btn btn-xs btn-primary" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(STATE.user.userId)+'\'),decodeURIComponent(\''+inlineArg(iss.id)+'\'))">详情 / 跟进</button>';
-      h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(iss.id)+'\'))">'+I.edit+' 编辑</button>';
-      h+='<button class="btn btn-xs btn-outline-danger" onclick="deleteIssue(decodeURIComponent(\''+inlineArg(iss.id)+'\'))">'+I.trash+'</button>';
-      h+='</div></div>';
-    }
-  }
-
-  // 全数据查看者只读；管理员可修改团队工单，但不提供跨账号删除。
-  if(canViewTeamData(STATE.user)){
-    var teamIssues=getMergedIssues().filter(function(item){return !!item._fromMember});
-    teamIssues.sort(function(a,b){return (a.deadline||'').localeCompare(b.deadline||'')});
-    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队成员工单（'+teamIssues.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">'+(isAdmin(STATE.user)?'管理员可修改，删除仍需成员本人操作':'全数据查看权限仅支持只读')+'</span></div>';
-    if(teamIssues.length===0){
-      h+='<div class="empty">当前没有团队成员工单</div>';
-    }else{
-      for(var ti=0;ti<teamIssues.length;ti++){
-        var teamIssue=teamIssues[ti];
-        normalizeIssueContract(teamIssue);
-        var teamPri=safePriority(teamIssue.priority);
-        var teamOwnerUserId=teamIssue._ownerUserId||'';
-        var teamStatus=teamIssue.currentStatus||deriveCurrentStatus(teamIssue);
-        var teamProgCls=teamStatus==='已完结'?'badge-completed':(teamStatus==='未跟进'?'badge-p2':'badge-progress');
-        h+='<div class="issue-card" style="border-left:3px solid var(--primary)">';
-        h+='<div class="ic-top"><span class="ic-store">'+esc(teamIssue.shopName||'未知门店')+'</span><div style="display:flex;gap:4px;flex-shrink:0">';
-        h+='<span class="badge badge-'+teamPri.toLowerCase()+'">'+esc(teamIssue.urgency)+'</span>';
-        h+='<span class="badge '+teamProgCls+'">'+esc(teamStatus)+'</span></div></div>';
-        h+='<div class="ic-desc">'+esc(teamIssue.shopDesc||'')+'</div>';
-        h+='<div class="ic-meta"><span>编号：'+esc(teamIssue.ticketNo||'待生成')+'</span><span>跟进人：'+esc(assigneeDisplayName(teamIssue.assigneeName))+'</span><span>数据所属：'+esc(teamIssue._fromMember||'')+'</span><span>计划完成：'+esc(teamIssue.deadline||'未设置')+'</span><span>历史跟进：'+getIssueFollowUps(teamIssue).length+' 条</span></div>';
-        h+='<div class="ic-actions">';
-        h+='<button class="btn btn-xs" onclick="openIssueDetail(decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'),decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'))">查看详情</button>';
-        if(isAdmin(STATE.user))h+='<button class="btn btn-xs" onclick="editIssue(decodeURIComponent(\''+inlineArg(teamIssue.id)+'\'),decodeURIComponent(\''+inlineArg(teamOwnerUserId)+'\'))">'+I.edit+' 编辑</button>';
-        h+='</div>';
-        h+='</div>';
-      }
-    }
-  }
+  h+='<div class="search-box" style="margin-top:14px">'+I.search+'<input id="issue-search" type="search" autocomplete="off" aria-label="搜索工单" placeholder="搜索编号、门店、问题、跟进人、状态或跟进内容；空格表示同时满足" value="'+escAttr(STATE.issueQuery||'')+'" oninput="updateIssueSearch(this.value)"></div>';
+  h+='<div id="issue-list-results">'+renderIssueLists()+'</div>';
 
   return h;
 }
@@ -2593,6 +3494,10 @@ async function addIssue(){
   if(!shop){T('请填写门店名称');return}
   if(!desc){T('请填写门店问题');return}
   if(!isValidExcelAssignee(assigneeName)){T('请从Excel名单中选择有效跟进人');return}
+  var assignee=findAssigneeByName(assigneeName);
+  if(!STATE.user||String(assignee.id)!==String(STATE.user.userId)){
+    T('为保证工单出现在正确客户经理的工作台，新建工单的跟进人必须是当前账号');return
+  }
   if(!canStartMutation())return;
   var formDraft=captureIssueFormDraft();
   var before=cloneJson(STATE.data);
@@ -2607,7 +3512,6 @@ async function addIssue(){
   var issue=findIssue(pending.issueId);
   var existed=!!issue.id;
   if(!existed){issue={id:pending.issueId,createdAt:pending.createdAt,followUps:[]};STATE.data.issues.unshift(issue)}
-  var assignee=findAssigneeByName(assigneeName);
   issue.ticketNo=pending.ticketNo||issue.ticketNo||'';
   issue.shopName=shop;issue.shopDesc=desc;issue.urgency=urgency;issue.priority=urgencyToPriority(urgency);
   issue.assigneeId=assignee.id;issue.assigneeName=assignee.name;issue.deadline=dl;issue.progress='未开始';
@@ -2625,7 +3529,7 @@ async function addIssue(){
   var saved=await saving;
   if(saved&&!(saved.conflicts||[]).some(function(item){return item.type==='update_after_remote_delete'&&item.collection==='issues'})){
     var newIssueFieldConflict=(saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'});
-    STATE.pendingNewIssue=null;T(businessWorkbookMessage(newIssueFieldConflict?'工单已保存；另一设备也修改了同一字段，请核对当前结果':'工单已登记',saved));return
+    STATE.pendingNewIssue=null;T(businessWorkbookMessage(newIssueFieldConflict?'已保存非冲突内容；冲突字段保留云端最新值，请核对':'工单已登记',saved));return
   }
   if(!saved)STATE.data=before;
   STATE.voiceText=formDraft?formDraft.transcript:'';
@@ -2653,12 +3557,19 @@ async function updateIssue(){
   var nextShopDesc=document.getElementById('iss-desc').value.trim();
   if(!nextShopDesc){T('请填写门店问题');return}
   var nextAssigneeName=normalizeAssigneeName(document.getElementById('iss-assignee').value);
-  if(!isValidExcelAssignee(nextAssigneeName)){T('请从Excel名单中选择有效跟进人');return}
-  var nextAssignee=findAssigneeByName(nextAssigneeName);
+  var currentAssigneeName=normalizeAssigneeName(iss.assigneeName);
+  var nextAssignee;
+  if(isValidExcelAssignee(nextAssigneeName))nextAssignee=findAssigneeByName(nextAssigneeName);
+  else if(nextAssigneeName===currentAssigneeName)nextAssignee={id:String(iss.assigneeId||''),name:currentAssigneeName};
+  else {T('请从有效人员名单中选择跟进人');return}
   var formDraft=captureIssueFormDraft();
   var nextUrgency=normalizeUrgency(document.getElementById('iss-pri').value);
   var values={shopName:nextShopName,shopDesc:nextShopDesc,urgency:nextUrgency,priority:urgencyToPriority(nextUrgency),assigneeId:nextAssignee.id,assigneeName:nextAssignee.name,deadline:document.getElementById('iss-deadline').value};
   var touched=Object.assign({},STATE.issueFormTouched||{});
+  var assigneeChanged=currentAssigneeName!==nextAssigneeName||String(iss.assigneeId||'')!==String(nextAssignee.id||'');
+  if(assigneeChanged&&String(nextAssignee.id)!==String(ref.ownerUserId)){
+    T('当前版本不允许直接跨账号转派；请保持为数据所属客户经理');return
+  }
   if(ref.ownerUserId!==STATE.user.userId){
     var touchedKeys=Object.keys(touched).filter(function(key){return touched[key]});
     if(touchedKeys.length===0){T('尚未修改任何工单字段');return}
@@ -2670,12 +3581,17 @@ async function updateIssue(){
     var teamResult=await saveTeamIssueMutation(ref.ownerUserId,id,{
       patch:teamPatch,
       history:null,
-      expectedIssueUpdatedAt:baseIssue.updatedAt||null,
+      versionedSnapshot:STATE.editingIssueSnapshot,
       syncReason:'issue_updated',syncRequestId:gid()
     });
     if(!teamResult.ok){
       if(teamResult.code==='issue_not_found')T('该工单已被成员删除，编辑内容未写入');
       else T('团队工单修改未同步，表单内容已保留，请重试');
+      return;
+    }
+    if(teamMutationHasConflict(teamResult,'update_after_remote_delete')){
+      // 保留当前编辑表单及 touched/base 快照，避免“RPC返回成功但实际未写入”时清空用户输入。
+      T('该工单已在另一入口删除，本次修改未写入；表单内容仍保留在当前页面');
       return;
     }
     clearIssueEditState();
@@ -2708,7 +3624,7 @@ async function updateIssue(){
       return;
     }
     var updateDeleteConflict=(saved.conflicts||[]).some(function(item){return item.type==='remote_delete_overridden_by_followup'&&item.collection==='issues'});
-    T(businessWorkbookMessage(updateDeleteConflict?'修改已保存；另一设备曾删除此工单，因包含新状态记录已自动保留':((saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'})?'修改已保存；另一设备也修改了同一字段，当前以本次保存为准，请核对':'工单修改已保存'),saved));
+    T(businessWorkbookMessage(updateDeleteConflict?'工单已被另一入口删除；本次修改未覆盖删除结果':((saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'})?'已保存非冲突字段；冲突字段保留云端最新值，请核对':'工单修改已保存'),saved));
   }else{
     STATE.data=before;STATE.editingIssueId=id;STATE.editingIssueOwnerUserId=STATE.user.userId;STATE.editingIssueBase=cloneJson(iss);STATE.issueFormTouched=Object.assign({},formDraft&&formDraft.touched||{});
     renderApp();restoreIssueFormDraft(formDraft);T('修改未同步，已保留编辑内容，请重试');
@@ -2722,6 +3638,7 @@ function editIssue(id,ownerUserId){
   STATE.editingIssueId=id;
   STATE.editingIssueOwnerUserId=owner;
   STATE.editingIssueBase=cloneJson(ref.issue);
+  STATE.editingIssueSnapshot=owner!==STATE.user.userId&&STATE.importedData[owner]?cloneJson(STATE.importedData[owner].versionedSnapshot||null):null;
   STATE.issueFormTouched={};
   renderApp();
   window.scrollTo({top:document.getElementById('pane-issues').offsetTop-60,behavior:'smooth'});
@@ -2747,6 +3664,12 @@ async function changeProgress(id, prog, ownerUserId){
       syncReason:'issue_status_changed',syncRequestId:teamHistoryOp.id
     });
     if(result.ok){
+      if(teamMutationHasConflict(result,'update_after_remote_delete')){
+        // 不删除 pendingHistoryOps；相同操作重试仍使用原幂等ID，且不会误报进度已保存。
+        renderApp();
+        T('该工单已在另一入口删除，本次进度未写入；操作记录已保留');
+        return;
+      }
       delete pendingHistoryOps[teamHistoryKey];
       renderApp();
       T(businessWorkbookMessage(result.metadata.fieldConflict?'进度已保存；成员在您操作期间更新过该工单，请核对最新结果':'团队工单进度已更新',result));
@@ -2779,7 +3702,7 @@ async function changeProgress(id, prog, ownerUserId){
     var progressDeleted=(saved.conflicts||[]).some(function(item){return item.type==='update_after_remote_delete'&&item.collection==='issues'});
     var progressConflict=(saved.conflicts||[]).some(function(item){return item.type==='field_conflict'&&item.collection==='issues'});
     var progressDeleteConflict=(saved.conflicts||[]).some(function(item){return item.type==='remote_delete_overridden_by_followup'&&item.collection==='issues'});
-    T(progressDeleted?'该工单已在另一设备删除，本次进度未写入':businessWorkbookMessage(progressDeleteConflict?'进度已保存；另一设备曾删除此工单，因有新状态记录已自动保留':(progressConflict?'进度已保存；另一设备也修改了进度，当前以本次保存为准，请核对':'进度已更新'),saved));
+    T(progressDeleted?'该工单已在另一入口删除，本次进度未写入':businessWorkbookMessage(progressDeleteConflict?'工单已被另一入口删除；本次进度未覆盖删除结果':(progressConflict?'非冲突内容已保存；冲突进度保留云端最新值，请核对':'进度已更新'),saved));
   }
   else{STATE.data=before;renderApp();T('进度未同步，已恢复原状态')}
 }
@@ -3194,20 +4117,20 @@ function renderKnowledge(){
       h+='</div>';
     }
   }
-  if(canViewTeamData(STATE.user)){
-    var teamKnowledge=getTeamKnowledgeEntries().filter(matchesKnowledge);
-    h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">团队知识（'+teamKnowledge.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">只读，不可编辑或删除</span></div>';
-    if(teamKnowledge.length===0){
-      h+='<div class="empty">'+(query?'团队知识中无匹配结果':'当前没有团队成员知识')+'</div>';
-    }else{
-      for(var tk=0;tk<teamKnowledge.length;tk++){
-        var teamItem=teamKnowledge[tk];
-        h+='<div class="know-card" style="border-left:3px solid var(--primary)">';
-        h+='<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px"><span class="kc-domain">'+esc(teamItem.domain||'未分类')+' <span class="kc-code">'+esc(teamItem.code||'')+'</span></span><span style="font-size:11px;color:var(--text3)">'+esc(teamItem._fromMember||'未知成员')+' · '+esc(teamItem._fromDept||'未填写部门')+'</span></div>';
-        h+='<div class="kc-title">'+esc(teamItem.title||'')+'</div>';
-        h+='<div class="kc-content">'+esc(teamItem.content||'')+'</div>';
-        h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">团队只读</div></div>';
-      }
+  var sharedKnowledge=getSharedKnowledgeEntries().filter(matchesKnowledge);
+  h+='<div style="font-weight:700;font-size:14px;margin:18px 0 8px">共享知识（'+sharedKnowledge.length+'）<span style="font-size:11px;color:var(--text3);font-weight:400;margin-left:6px">全员可见 · 其他成员内容只读</span></div>';
+  if(STATE.sharedKnowledgeError)h+='<div class="readonly-note" style="margin-bottom:8px">'+esc(STATE.sharedKnowledgeError)+'，系统每 15 秒自动重试。</div>';
+  if(sharedKnowledge.length===0){
+    h+='<div class="empty">'+(query?'共享知识中无匹配结果':'当前没有其他成员共享的知识')+'</div>';
+  }else{
+    for(var sk=0;sk<sharedKnowledge.length;sk++){
+      var sharedItem=sharedKnowledge[sk];
+      var authorState=sharedItem._authorIsActive===false?' · 已离职（历史保留）':'';
+      h+='<div class="know-card" style="border-left:3px solid var(--primary)">';
+      h+='<div style="display:flex;justify-content:space-between;gap:8px;margin-bottom:5px"><span class="kc-domain">'+esc(sharedItem.domain||'未分类')+' <span class="kc-code">'+esc(sharedItem.code||'')+'</span></span><span style="font-size:11px;color:var(--text3)">'+esc(sharedItem._fromMember||'未知成员')+' · '+esc(sharedItem._fromDept||'未填写部门')+esc(authorState)+'</span></div>';
+      h+='<div class="kc-title">'+esc(sharedItem.title||'')+'</div>';
+      h+='<div class="kc-content">'+esc(sharedItem.content||'')+'</div>';
+      h+='<div style="font-size:11px;color:var(--text3);margin-top:8px">共享只读 · 仅作者本人可修改或删除</div></div>';
     }
   }
   return h;
@@ -3220,6 +4143,14 @@ function updateKnowledgeSearch(value){
   input.focus();
   try{input.setSelectionRange(input.value.length,input.value.length)}catch(e){}
 }
+function captureKnowledgeFormDraft(){
+  var fields=['kw-domain','kw-code','kw-title','kw-content'],draft={};
+  fields.forEach(function(id){var el=document.getElementById(id);draft[id]=el?el.value:''});
+  return draft;
+}
+function restoreKnowledgeFormDraft(draft){
+  Object.keys(draft||{}).forEach(function(id){var el=document.getElementById(id);if(el)el.value=draft[id]||''});
+}
 async function addKnowledge(){
   var dom=document.getElementById('kw-domain').value.trim();
   var code=document.getElementById('kw-code').value.trim();
@@ -3227,18 +4158,32 @@ async function addKnowledge(){
   var content=document.getElementById('kw-content').value.trim();
   if(!title){T('请填写标题');return}
   if(!canStartMutation())return;
+  var before=cloneJson(STATE.data);
+  var formDraft=captureKnowledgeFormDraft();
   STATE.data.knowledge.unshift({id:gid(),domain:dom,code:code,title:title,content:content});
   var saving=saveUserData();
   renderApp();
-  T((await saving)?'已添加到知识库并同步':'知识未同步，请重试');
+  var saved=await saving;
+  if(!saved){
+    STATE.data=before;renderApp();restoreKnowledgeFormDraft(formDraft);
+    T('知识未同步，已恢复原状态，请重试');return false;
+  }
+  T('已添加到知识库并同步');
+  return true;
 }
 async function deleteKnowledge(id){
   if(!canStartMutation())return;
   if(!confirm('确定删除此知识项？')) return;
-  STATE.data.knowledge=STATE.data.knowledge.filter(function(k){return k.id!==id});
+  var before=cloneJson(STATE.data);
+  STATE.data.knowledge=STATE.data.knowledge.filter(function(k){return String(k.id)!==String(id)});
   var saving=saveUserData();
   renderApp();
-  T((await saving)?'已删除并同步云端':'删除未同步，请重试');
+  var saved=await saving;
+  if(!saved){
+    STATE.data=before;renderApp();T('删除未同步，知识项已恢复，请重试');return false;
+  }
+  T('已删除并同步云端');
+  return true;
 }
 
 function adminFullWorkbookSyncState(){
@@ -3249,37 +4194,13 @@ function adminFullWorkbookSyncState(){
   }
   return state;
 }
-function adminFullWorkbookSyncMembers(){
-  var seen={},known={},members=[];
-  (Array.isArray(TEAM_PROFILES)?TEAM_PROFILES:[]).forEach(function(profile){
-    if(!profile)return;
-    var userId=String(profile.userId||profile.id||'').trim();
-    if(!userId)return;
-    known[userId]=true;
-    if(profile.isActive===false||seen[userId])return;
-    seen[userId]=true;
-    members.push({userId:userId,name:String(profile.name||profile.username||userId).trim()||userId});
-  });
-  if(STATE.user&&STATE.user.isActive!==false){
-    var currentUserId=String(STATE.user.userId||STATE.user.id||'').trim();
-    if(currentUserId&&!known[currentUserId]&&!seen[currentUserId]){
-      members.push({userId:currentUserId,name:String(STATE.user.name||STATE.user.username||currentUserId).trim()||currentUserId});
-    }
-  }
-  return members;
-}
-function adminFullWorkbookSyncFailureMessage(result,member,progress){
+function adminFullWorkbookSyncFailureMessage(result){
   result=result&&typeof result==='object'?result:{};
+  if(result.skipped&&result.status==='disabled')return '当前 WPS 联动尚未启用，未执行全量同步。客户管家台数据没有改动。';
+  if(result.status==='unavailable')return '当前登录会话无法连接同步服务，未执行全量同步。请刷新页面后重试。';
   var details=result.details&&typeof result.details==='object'?result.details:{};
   var detailMessage=String(details.message||result.error&&result.error.message||'').trim();
-  var reason=result.skipped&&result.status==='disabled'
-    ? '当前 WPS 联动尚未启用'
-    : (result.status==='unavailable'?'当前登录会话无法连接同步服务':(detailMessage||'WPS 同步服务未返回成功确认'));
-  if(!member)return '全量同步未完成：'+reason+'。客户管家台数据没有改动，可稍后重试。';
-  progress=progress&&typeof progress==='object'?progress:{};
-  var completed=Number(progress.completed)||0,total=Number(progress.total)||0,index=Number(progress.index)||completed+1;
-  return '分批全量同步在第 '+index+'/'+total+' 位成员“'+String(member.name||member.userId||'未知成员')+'”处停止：'+reason+
-    '。已完成 '+completed+'/'+total+' 位；客户管家台数据没有改动。可重新执行，已完成成员会自动幂等核对。';
+  return '全量同步未完成'+(detailMessage?'：'+detailMessage:'')+'。客户管家台数据没有改动，可稍后重试。';
 }
 function renderAdminFullWorkbookSyncPanel(){
   if(!isAdmin(STATE.user))return '';
@@ -3288,14 +4209,14 @@ function renderAdminFullWorkbookSyncPanel(){
   var statusStyle=state.status==='success'
     ? 'background:var(--success2);color:#047857;border-color:#a7f3d0'
     : (state.status==='failed'
-      ? 'background:var(--danger2);color:var(--danger);border-color:#fecaca'
+      ? 'background:var(--danger2);color:#b91c1c;border-color:#fecaca'
       : 'background:var(--primary-lighter);color:var(--primary-dark);border-color:var(--primary-light)');
   var h='<div class="card" id="admin-full-wps-sync-panel">';
   h+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">';
   h+='<div style="flex:1;min-width:220px"><div style="font-size:14px;font-weight:700;margin-bottom:4px">全量同步到 WPS</div>'+
-    '<div style="font-size:12px;line-height:1.7;color:var(--text2)">按在岗成员逐批串行核对 Supabase 工单和跟进记录并镜像到 WPS，已移除成员自动跳过。此操作不会修改客户管家台的工单业务数据。</div></div>';
+    '<div style="font-size:12px;line-height:1.7;color:var(--text2)">将 Supabase 当前全部工单和跟进记录核对并镜像到 WPS。此操作不会修改客户管家台的工单业务数据。</div></div>';
   h+='<button id="admin-full-wps-sync-button" class="btn btn-sm btn-primary" onclick="runAdminFullWorkbookSync()"'+
-    (running?' disabled aria-busy="true" style="opacity:.65;cursor:not-allowed"':'')+'>'+I.refresh+' '+(running?'正在分批同步…':'开始全量同步')+'</button>';
+    (running?' disabled aria-busy="true" style="opacity:.65;cursor:not-allowed"':'')+'>'+I.refresh+' '+(running?'正在全量同步…':'开始全量同步')+'</button>';
   h+='</div>';
   if(state.message){
     h+='<div id="admin-full-wps-sync-status" role="status" aria-live="polite" style="margin-top:10px;padding:9px 11px;border:1px solid;border-radius:var(--rxs);font-size:12px;line-height:1.7;'+statusStyle+'">'+esc(state.message)+'</div>';
@@ -3310,75 +4231,42 @@ async function runAdminFullWorkbookSync(){
   }
   var current=adminFullWorkbookSyncState();
   if(current.status==='running')return {ok:false,status:'already_running',requestId:current.requestId};
-  var members=adminFullWorkbookSyncMembers();
-  if(!members.length){
-    var noMemberMessage='没有可同步的在岗成员，未执行 WPS 全量同步。';
-    STATE.adminFullWorkbookSync={status:'failed',message:noMemberMessage,requestId:''};
-    renderApp();T(noMemberMessage);
-    return {ok:false,status:'no_active_members',workbookSynced:false};
-  }
-  if(!confirm('确认按 '+members.length+' 位在岗成员逐批同步到 WPS？\n\n每位成员完成后才会继续下一位；同步期间请不要重复点击。此操作不会修改客户管家台的工单业务数据。')){
+  if(!confirm('确认把 Supabase 当前全部工单和跟进记录全量同步到 WPS？\n\n同步期间请不要重复点击。此操作不会修改客户管家台的工单业务数据。')){
     return {ok:false,status:'cancelled'};
   }
   var requestId='admin-full-wps:'+String(STATE.user.userId||'admin')+':'+gid();
-  var totals={tickets:0,followups:0,deletions:0,verifiedAllocations:0};
-  var memberResults=[],allUnchanged=true,currentMember=null,currentIndex=0;
-  STATE.adminFullWorkbookSync={status:'running',message:'准备按 '+members.length+' 位在岗成员逐批同步，请勿重复点击…',requestId:requestId};
-  setCloudStatus('正在执行 WPS 分批全量同步','var(--primary)');
+  STATE.adminFullWorkbookSync={status:'running',message:'正在核对并同步全部工单和跟进记录，请勿重复点击…',requestId:requestId};
+  setCloudStatus('正在执行 WPS 全量同步','var(--primary)');
   renderApp();
   try{
-    for(var i=0;i<members.length;i++){
-      currentMember=members[i];currentIndex=i+1;
-      STATE.adminFullWorkbookSync={
-        status:'running',
-        message:'正在同步第 '+currentIndex+'/'+members.length+' 位：'+currentMember.name+'；已完成 '+i+'/'+members.length+' 位。',
-        requestId:requestId
-      };
-      setCloudStatus('正在同步 '+currentMember.name+'（'+currentIndex+'/'+members.length+'）','var(--primary)');
-      renderApp();
-      var memberRequestId=requestId+':member:'+currentMember.userId;
-      var result=await requestWorkbookSync('admin_manual_member_full_sync',{
-        fullSync:true,ownerUserId:currentMember.userId,requestId:memberRequestId,maxAttempts:1
-      });
-      if(!result||!result.workbookSynced){
-        var failureMessage=adminFullWorkbookSyncFailureMessage(result,currentMember,{index:currentIndex,completed:i,total:members.length});
-        STATE.adminFullWorkbookSync={status:'failed',message:failureMessage,requestId:requestId};
-        setCloudStatus('WPS 分批同步在 '+currentMember.name+' 处停止','var(--warning)');
-        renderApp();T(failureMessage);
-        return {
-          ok:false,status:result&&result.status||'failed',workbookSynced:false,pending:!!(result&&result.pending),
-          requestId:requestId,failedMember:currentMember,completedMembers:i,totalMembers:members.length,
-          data:totals,memberResults:memberResults,cause:result||null
-        };
-      }
+    var result=await requestWorkbookSync('admin_manual_full_sync',{mode:'full',requestId:requestId});
+    if(result&&result.workbookSynced){
       var data=result.data&&typeof result.data==='object'?result.data:{};
-      ['tickets','followups','deletions','verifiedAllocations'].forEach(function(key){
-        var value=Number(data[key]);
-        if(Number.isFinite(value)&&value>0)totals[key]+=value;
-      });
-      if(result.status!=='unchanged')allUnchanged=false;
-      memberResults.push({userId:currentMember.userId,name:currentMember.name,status:result.status,data:data,requestId:memberRequestId});
+      var counts=[];
+      if(Number.isFinite(Number(data.tickets)))counts.push(Number(data.tickets)+' 张工单');
+      if(Number.isFinite(Number(data.followups)))counts.push(Number(data.followups)+' 条跟进');
+      if(Number(data.deletions)>0)counts.push(Number(data.deletions)+' 条删除项');
+      var prefix=result.status==='unchanged'?'全量核对完成，WPS 已是最新':'全量同步成功，WPS 已更新';
+      var message=prefix+(counts.length?'；已核对 '+counts.join('、'):'')+'。';
+      STATE.adminFullWorkbookSync={status:'success',message:message,requestId:requestId};
+      setCloudStatus('WPS 全量同步已完成','var(--success)');
+      renderApp();
+      T(message);
+      return result;
     }
-    var prefix=allUnchanged?'分批全量核对完成，WPS 已是最新':'分批全量同步成功，WPS 已更新';
-    var message=prefix+'；已完成 '+members.length+'/'+members.length+' 位在岗成员，汇总 '+totals.tickets+' 张工单、'+
-      totals.followups+' 条跟进、'+totals.deletions+' 条删除项、'+totals.verifiedAllocations+' 张编号核验。';
-    STATE.adminFullWorkbookSync={status:'success',message:message,requestId:requestId};
-    setCloudStatus('WPS 分批全量同步已完成','var(--success)');
-    renderApp();T(message);
-    return {
-      ok:true,status:allUnchanged?'unchanged':'succeeded',workbookSynced:true,pending:false,requestId:requestId,
-      completedMembers:members.length,totalMembers:members.length,data:totals,memberResults:memberResults
-    };
+    var failureMessage=adminFullWorkbookSyncFailureMessage(result);
+    STATE.adminFullWorkbookSync={status:'failed',message:failureMessage,requestId:requestId};
+    setCloudStatus('WPS 全量同步未完成，请稍后重试','var(--warning)');
+    renderApp();
+    T(failureMessage);
+    return result||{ok:false,status:'failed',requestId:requestId};
   }catch(error){
-    var failure=adminFullWorkbookSyncFailureMessage({error:error},currentMember,{index:currentIndex,completed:Math.max(0,currentIndex-1),total:members.length});
+    var failure=adminFullWorkbookSyncFailureMessage({error:error});
     STATE.adminFullWorkbookSync={status:'failed',message:failure,requestId:requestId};
-    setCloudStatus('WPS 分批全量同步未完成，请稍后重试','var(--warning)');
+    setCloudStatus('WPS 全量同步未完成，请稍后重试','var(--warning)');
     renderApp();
     T(failure);
-    return {
-      ok:false,status:'failed',workbookSynced:false,error:error,requestId:requestId,failedMember:currentMember,
-      completedMembers:Math.max(0,currentIndex-1),totalMembers:members.length,data:totals,memberResults:memberResults
-    };
+    return {ok:false,status:'failed',error:error,requestId:requestId};
   }
 }
 

@@ -486,7 +486,10 @@ function normalizeFollowUpContract(item,issue){
   item.followerName=normalizeAssigneeName(item.followerName||item.authorName||'');
   item.authorId=item.authorId||item.followerId;
   item.authorName=normalizeAssigneeName(item.authorName||item.followerName);
-  if(item.type==='follow_up')item.status=safeFollowStatus(item.status||item.toProgress||issue&&issue.progress)||'跟进中';
+  // 历史倒灌里存在“状态校准”空记录：空状态必须保持无效，不能用工单旧 progress
+  // 或默认“跟进中”补齐，否则会覆盖更早但真实有效的“已完结”记录并制造假逾期。
+  // 正常新增跟进在表单/WPS入口均会显式提交“跟进中”或“已完结”。
+  if(item.type==='follow_up')item.status=safeFollowStatus(item.status||item.toProgress);
   if(item.type==='status_change')item.toProgress=safeFollowStatus(item.toProgress||item.status)||'';
   return item;
 }

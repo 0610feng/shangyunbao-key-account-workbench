@@ -578,21 +578,26 @@ function businessWorkbookMessage(action,saveResult){
 async function requestWorkbookSync(reason,context){
   context=context||{};
   var clientRequestId=String(context.requestId||gid());
+  var requestedAttempts=context.disableRetry===true?1:(context.maxAttempts===undefined?3:Number(context.maxAttempts));
+  var maxAttempts=Number.isFinite(requestedAttempts)?Math.max(1,Math.min(3,Math.floor(requestedAttempts))):3;
   if(CLOUD_CONFIG.workbookSyncEnabled!==true)return {ok:true,skipped:true,status:'disabled',workbookSynced:false,pending:false,requestId:clientRequestId,attempts:0};
   if(!db||!db.functions||typeof db.functions.invoke!=='function')return {ok:false,skipped:true,status:'unavailable',workbookSynced:false,pending:true,requestId:clientRequestId,attempts:0};
   var functionName=CLOUD_CONFIG.workbookSyncFunction||'kdocs-workbook-sync';
+  var invokeContext=Object.assign({},context);
+  delete invokeContext.maxAttempts;
+  delete invokeContext.disableRetry;
   // body 在全部重试中保持不变，尤其 requestId 不变，避免同一次保存产生重复同步任务。
-  var body=Object.assign({reason:reason||'workbench_data_saved',requestedAt:nowIso()},context,{requestId:clientRequestId});
+  var body=Object.assign({reason:reason||'workbench_data_saved',requestedAt:nowIso()},invokeContext,{requestId:clientRequestId});
   var lastDetails=null;
   var attempts=0;
-  for(var attempt=0;attempt<3;attempt++){
+  for(var attempt=0;attempt<maxAttempts;attempt++){
     attempts=attempt+1;
     try{
       var result=await db.functions.invoke(functionName,{body:body});
       var data=result.data&&typeof result.data==='object'?result.data:{};
       if(result.error){
         lastDetails=workbookSyncErrorDetails(result.error,data);
-        if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
+        if(attempt<maxAttempts-1&&isRetryableWorkbookSyncError(lastDetails)){
           await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
           continue;
         }
@@ -605,20 +610,20 @@ async function requestWorkbookSync(reason,context){
       }
       if(status==='busy'){
         lastDetails={status:202,code:'SYNC_BUSY',message:'表格同步队列持续繁忙'};
-        if(attempt>=2)break;
+        if(attempt>=maxAttempts-1)break;
         var retrySeconds=Math.max(1,Math.min(10,Number(data.retryAfterSeconds)||2));
         await workbookSyncDelay(retrySeconds*1000);
         continue;
       }
       lastDetails=workbookSyncErrorDetails(null,data);
-      if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
+      if(attempt<maxAttempts-1&&isRetryableWorkbookSyncError(lastDetails)){
         await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
         continue;
       }
       break;
     }catch(error){
       lastDetails=workbookSyncErrorDetails(error,{});
-      if(attempt<2&&isRetryableWorkbookSyncError(lastDetails)){
+      if(attempt<maxAttempts-1&&isRetryableWorkbookSyncError(lastDetails)){
         await workbookSyncDelay(Math.min(3000,700*Math.pow(2,attempt)));
         continue;
       }
@@ -3244,13 +3249,37 @@ function adminFullWorkbookSyncState(){
   }
   return state;
 }
-function adminFullWorkbookSyncFailureMessage(result){
+function adminFullWorkbookSyncMembers(){
+  var seen={},known={},members=[];
+  (Array.isArray(TEAM_PROFILES)?TEAM_PROFILES:[]).forEach(function(profile){
+    if(!profile)return;
+    var userId=String(profile.userId||profile.id||'').trim();
+    if(!userId)return;
+    known[userId]=true;
+    if(profile.isActive===false||seen[userId])return;
+    seen[userId]=true;
+    members.push({userId:userId,name:String(profile.name||profile.username||userId).trim()||userId});
+  });
+  if(STATE.user&&STATE.user.isActive!==false){
+    var currentUserId=String(STATE.user.userId||STATE.user.id||'').trim();
+    if(currentUserId&&!known[currentUserId]&&!seen[currentUserId]){
+      members.push({userId:currentUserId,name:String(STATE.user.name||STATE.user.username||currentUserId).trim()||currentUserId});
+    }
+  }
+  return members;
+}
+function adminFullWorkbookSyncFailureMessage(result,member,progress){
   result=result&&typeof result==='object'?result:{};
-  if(result.skipped&&result.status==='disabled')return '当前 WPS 联动尚未启用，未执行全量同步。客户管家台数据没有改动。';
-  if(result.status==='unavailable')return '当前登录会话无法连接同步服务，未执行全量同步。请刷新页面后重试。';
   var details=result.details&&typeof result.details==='object'?result.details:{};
   var detailMessage=String(details.message||result.error&&result.error.message||'').trim();
-  return '全量同步未完成'+(detailMessage?'：'+detailMessage:'')+'。客户管家台数据没有改动，可稍后重试。';
+  var reason=result.skipped&&result.status==='disabled'
+    ? '当前 WPS 联动尚未启用'
+    : (result.status==='unavailable'?'当前登录会话无法连接同步服务':(detailMessage||'WPS 同步服务未返回成功确认'));
+  if(!member)return '全量同步未完成：'+reason+'。客户管家台数据没有改动，可稍后重试。';
+  progress=progress&&typeof progress==='object'?progress:{};
+  var completed=Number(progress.completed)||0,total=Number(progress.total)||0,index=Number(progress.index)||completed+1;
+  return '分批全量同步在第 '+index+'/'+total+' 位成员“'+String(member.name||member.userId||'未知成员')+'”处停止：'+reason+
+    '。已完成 '+completed+'/'+total+' 位；客户管家台数据没有改动。可重新执行，已完成成员会自动幂等核对。';
 }
 function renderAdminFullWorkbookSyncPanel(){
   if(!isAdmin(STATE.user))return '';
@@ -3264,9 +3293,9 @@ function renderAdminFullWorkbookSyncPanel(){
   var h='<div class="card" id="admin-full-wps-sync-panel">';
   h+='<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">';
   h+='<div style="flex:1;min-width:220px"><div style="font-size:14px;font-weight:700;margin-bottom:4px">全量同步到 WPS</div>'+
-    '<div style="font-size:12px;line-height:1.7;color:var(--text2)">将 Supabase 当前全部工单和跟进记录核对并镜像到 WPS。此操作不会修改客户管家台的工单业务数据。</div></div>';
+    '<div style="font-size:12px;line-height:1.7;color:var(--text2)">按在岗成员逐批串行核对 Supabase 工单和跟进记录并镜像到 WPS，已移除成员自动跳过。此操作不会修改客户管家台的工单业务数据。</div></div>';
   h+='<button id="admin-full-wps-sync-button" class="btn btn-sm btn-primary" onclick="runAdminFullWorkbookSync()"'+
-    (running?' disabled aria-busy="true" style="opacity:.65;cursor:not-allowed"':'')+'>'+I.refresh+' '+(running?'正在全量同步…':'开始全量同步')+'</button>';
+    (running?' disabled aria-busy="true" style="opacity:.65;cursor:not-allowed"':'')+'>'+I.refresh+' '+(running?'正在分批同步…':'开始全量同步')+'</button>';
   h+='</div>';
   if(state.message){
     h+='<div id="admin-full-wps-sync-status" role="status" aria-live="polite" style="margin-top:10px;padding:9px 11px;border:1px solid;border-radius:var(--rxs);font-size:12px;line-height:1.7;'+statusStyle+'">'+esc(state.message)+'</div>';
@@ -3281,42 +3310,75 @@ async function runAdminFullWorkbookSync(){
   }
   var current=adminFullWorkbookSyncState();
   if(current.status==='running')return {ok:false,status:'already_running',requestId:current.requestId};
-  if(!confirm('确认把 Supabase 当前全部工单和跟进记录全量同步到 WPS？\n\n同步期间请不要重复点击。此操作不会修改客户管家台的工单业务数据。')){
+  var members=adminFullWorkbookSyncMembers();
+  if(!members.length){
+    var noMemberMessage='没有可同步的在岗成员，未执行 WPS 全量同步。';
+    STATE.adminFullWorkbookSync={status:'failed',message:noMemberMessage,requestId:''};
+    renderApp();T(noMemberMessage);
+    return {ok:false,status:'no_active_members',workbookSynced:false};
+  }
+  if(!confirm('确认按 '+members.length+' 位在岗成员逐批同步到 WPS？\n\n每位成员完成后才会继续下一位；同步期间请不要重复点击。此操作不会修改客户管家台的工单业务数据。')){
     return {ok:false,status:'cancelled'};
   }
   var requestId='admin-full-wps:'+String(STATE.user.userId||'admin')+':'+gid();
-  STATE.adminFullWorkbookSync={status:'running',message:'正在核对并同步全部工单和跟进记录，请勿重复点击…',requestId:requestId};
-  setCloudStatus('正在执行 WPS 全量同步','var(--primary)');
+  var totals={tickets:0,followups:0,deletions:0,verifiedAllocations:0};
+  var memberResults=[],allUnchanged=true,currentMember=null,currentIndex=0;
+  STATE.adminFullWorkbookSync={status:'running',message:'准备按 '+members.length+' 位在岗成员逐批同步，请勿重复点击…',requestId:requestId};
+  setCloudStatus('正在执行 WPS 分批全量同步','var(--primary)');
   renderApp();
   try{
-    var result=await requestWorkbookSync('admin_manual_full_sync',{mode:'full',requestId:requestId});
-    if(result&&result.workbookSynced){
-      var data=result.data&&typeof result.data==='object'?result.data:{};
-      var counts=[];
-      if(Number.isFinite(Number(data.tickets)))counts.push(Number(data.tickets)+' 张工单');
-      if(Number.isFinite(Number(data.followups)))counts.push(Number(data.followups)+' 条跟进');
-      if(Number(data.deletions)>0)counts.push(Number(data.deletions)+' 条删除项');
-      var prefix=result.status==='unchanged'?'全量核对完成，WPS 已是最新':'全量同步成功，WPS 已更新';
-      var message=prefix+(counts.length?'；已核对 '+counts.join('、'):'')+'。';
-      STATE.adminFullWorkbookSync={status:'success',message:message,requestId:requestId};
-      setCloudStatus('WPS 全量同步已完成','var(--success)');
+    for(var i=0;i<members.length;i++){
+      currentMember=members[i];currentIndex=i+1;
+      STATE.adminFullWorkbookSync={
+        status:'running',
+        message:'正在同步第 '+currentIndex+'/'+members.length+' 位：'+currentMember.name+'；已完成 '+i+'/'+members.length+' 位。',
+        requestId:requestId
+      };
+      setCloudStatus('正在同步 '+currentMember.name+'（'+currentIndex+'/'+members.length+'）','var(--primary)');
       renderApp();
-      T(message);
-      return result;
+      var memberRequestId=requestId+':member:'+currentMember.userId;
+      var result=await requestWorkbookSync('admin_manual_member_full_sync',{
+        fullSync:true,ownerUserId:currentMember.userId,requestId:memberRequestId,maxAttempts:1
+      });
+      if(!result||!result.workbookSynced){
+        var failureMessage=adminFullWorkbookSyncFailureMessage(result,currentMember,{index:currentIndex,completed:i,total:members.length});
+        STATE.adminFullWorkbookSync={status:'failed',message:failureMessage,requestId:requestId};
+        setCloudStatus('WPS 分批同步在 '+currentMember.name+' 处停止','var(--warning)');
+        renderApp();T(failureMessage);
+        return {
+          ok:false,status:result&&result.status||'failed',workbookSynced:false,pending:!!(result&&result.pending),
+          requestId:requestId,failedMember:currentMember,completedMembers:i,totalMembers:members.length,
+          data:totals,memberResults:memberResults,cause:result||null
+        };
+      }
+      var data=result.data&&typeof result.data==='object'?result.data:{};
+      ['tickets','followups','deletions','verifiedAllocations'].forEach(function(key){
+        var value=Number(data[key]);
+        if(Number.isFinite(value)&&value>0)totals[key]+=value;
+      });
+      if(result.status!=='unchanged')allUnchanged=false;
+      memberResults.push({userId:currentMember.userId,name:currentMember.name,status:result.status,data:data,requestId:memberRequestId});
     }
-    var failureMessage=adminFullWorkbookSyncFailureMessage(result);
-    STATE.adminFullWorkbookSync={status:'failed',message:failureMessage,requestId:requestId};
-    setCloudStatus('WPS 全量同步未完成，请稍后重试','var(--warning)');
-    renderApp();
-    T(failureMessage);
-    return result||{ok:false,status:'failed',requestId:requestId};
+    var prefix=allUnchanged?'分批全量核对完成，WPS 已是最新':'分批全量同步成功，WPS 已更新';
+    var message=prefix+'；已完成 '+members.length+'/'+members.length+' 位在岗成员，汇总 '+totals.tickets+' 张工单、'+
+      totals.followups+' 条跟进、'+totals.deletions+' 条删除项、'+totals.verifiedAllocations+' 张编号核验。';
+    STATE.adminFullWorkbookSync={status:'success',message:message,requestId:requestId};
+    setCloudStatus('WPS 分批全量同步已完成','var(--success)');
+    renderApp();T(message);
+    return {
+      ok:true,status:allUnchanged?'unchanged':'succeeded',workbookSynced:true,pending:false,requestId:requestId,
+      completedMembers:members.length,totalMembers:members.length,data:totals,memberResults:memberResults
+    };
   }catch(error){
-    var failure=adminFullWorkbookSyncFailureMessage({error:error});
+    var failure=adminFullWorkbookSyncFailureMessage({error:error},currentMember,{index:currentIndex,completed:Math.max(0,currentIndex-1),total:members.length});
     STATE.adminFullWorkbookSync={status:'failed',message:failure,requestId:requestId};
-    setCloudStatus('WPS 全量同步未完成，请稍后重试','var(--warning)');
+    setCloudStatus('WPS 分批全量同步未完成，请稍后重试','var(--warning)');
     renderApp();
     T(failure);
-    return {ok:false,status:'failed',error:error,requestId:requestId};
+    return {
+      ok:false,status:'failed',workbookSynced:false,error:error,requestId:requestId,failedMember:currentMember,
+      completedMembers:Math.max(0,currentIndex-1),totalMembers:members.length,data:totals,memberResults:memberResults
+    };
   }
 }
 
@@ -3479,4 +3541,3 @@ window.addEventListener('beforeunload',function(event){
 </script>
 </body>
 </html>
-  

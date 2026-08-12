@@ -6,5 +6,10 @@ window.WORKBENCH_CONFIG = {
   ticketNumberingEnabled: true,
   ticketNumberRpc: 'allocate_ticket_no',
   workbookSyncEnabled: true,
-  workbookSyncFunction: 'kdocs-workbook-sync'
+  workbookSyncFunction: 'kdocs-workbook-sync',
+  // 双向回写只在数据库迁移、Edge Function和WPS AirScript全部完成备份环境验收后开启。
+  // 关闭时仍保持现有“客户管家台 -> WPS”单向同步，不会改变正式表。
+  workbookBidirectionalEnabled: false,
+  workbookBidirectionalFunction: 'kdocs-workbook-ingest',
+  workbookBidirectionalPollMs: 30000
 };
